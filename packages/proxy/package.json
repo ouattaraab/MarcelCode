@@ -13,6 +13,7 @@
     "test": "vitest"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
     "@marcelia/shared": "1.0.0",
     "@prisma/client": "^6.0.0",
     "cors": "^2.8.5",

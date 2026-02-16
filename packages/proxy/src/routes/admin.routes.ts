@@ -29,8 +29,9 @@ adminRoutes.post('/teams', async (req: Request, res: Response) => {
 
 adminRoutes.put('/teams/:id', async (req: Request, res: Response) => {
   const prisma = getPrisma();
+  const id = req.params.id as string;
   const team = await prisma.team.update({
-    where: { id: req.params.id },
+    where: { id },
     data: { name: req.body.name, description: req.body.description },
   });
   res.json(team);
@@ -39,9 +40,9 @@ adminRoutes.put('/teams/:id', async (req: Request, res: Response) => {
 // --- Users ---
 adminRoutes.get('/users', async (req: Request, res: Response) => {
   const prisma = getPrisma();
-  const { teamId } = req.query;
+  const teamId = req.query.teamId as string | undefined;
   const users = await prisma.user.findMany({
-    where: teamId ? { teamId: teamId as string } : undefined,
+    where: teamId ? { teamId } : undefined,
     include: { team: true },
   });
   res.json(users);
@@ -49,8 +50,9 @@ adminRoutes.get('/users', async (req: Request, res: Response) => {
 
 adminRoutes.put('/users/:id', async (req: Request, res: Response) => {
   const prisma = getPrisma();
+  const id = req.params.id as string;
   const user = await prisma.user.update({
-    where: { id: req.params.id },
+    where: { id },
     data: {
       role: req.body.role,
       teamId: req.body.teamId,
@@ -62,12 +64,11 @@ adminRoutes.put('/users/:id', async (req: Request, res: Response) => {
 // --- Quotas ---
 adminRoutes.get('/quotas/:entityType/:entityId', async (req: Request, res: Response) => {
   const prisma = getPrisma();
+  const entityType = req.params.entityType as string;
+  const entityId = req.params.entityId as string;
   const config = await prisma.quotaConfig.findUnique({
     where: {
-      entityType_entityId: {
-        entityType: req.params.entityType,
-        entityId: req.params.entityId,
-      },
+      entityType_entityId: { entityType, entityId },
     },
   });
   if (!config) {
@@ -79,12 +80,11 @@ adminRoutes.get('/quotas/:entityType/:entityId', async (req: Request, res: Respo
 
 adminRoutes.put('/quotas/:entityType/:entityId', async (req: Request, res: Response) => {
   const prisma = getPrisma();
+  const entityType = req.params.entityType as string;
+  const entityId = req.params.entityId as string;
   const config = await prisma.quotaConfig.upsert({
     where: {
-      entityType_entityId: {
-        entityType: req.params.entityType,
-        entityId: req.params.entityId,
-      },
+      entityType_entityId: { entityType, entityId },
     },
     update: {
       dailyTokenLimit: req.body.dailyTokenLimit,
@@ -93,8 +93,8 @@ adminRoutes.put('/quotas/:entityType/:entityId', async (req: Request, res: Respo
       allowedModels: req.body.allowedModels,
     },
     create: {
-      entityType: req.params.entityType,
-      entityId: req.params.entityId,
+      entityType,
+      entityId,
       dailyTokenLimit: req.body.dailyTokenLimit,
       monthlyTokenLimit: req.body.monthlyTokenLimit,
       maxRequestsPerMinute: req.body.maxRequestsPerMinute,
@@ -106,36 +106,44 @@ adminRoutes.put('/quotas/:entityType/:entityId', async (req: Request, res: Respo
 
 // --- Analytics ---
 adminRoutes.get('/analytics/team/:teamId', async (req: Request, res: Response) => {
-  const { startDate, endDate } = req.query;
-  const start = startDate ? new Date(startDate as string) : new Date(Date.now() - 30 * 86400000);
-  const end = endDate ? new Date(endDate as string) : new Date();
+  const startDate = req.query.startDate as string | undefined;
+  const endDate = req.query.endDate as string | undefined;
+  const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 86400000);
+  const end = endDate ? new Date(endDate) : new Date();
+  const teamId = req.params.teamId as string;
 
-  const analytics = await getUsageByTeam(req.params.teamId, start, end);
+  const analytics = await getUsageByTeam(teamId, start, end);
   res.json(analytics);
 });
 
 adminRoutes.get('/analytics/user/:userId', async (req: Request, res: Response) => {
-  const { startDate, endDate } = req.query;
-  const start = startDate ? new Date(startDate as string) : new Date(Date.now() - 30 * 86400000);
-  const end = endDate ? new Date(endDate as string) : new Date();
+  const startDate = req.query.startDate as string | undefined;
+  const endDate = req.query.endDate as string | undefined;
+  const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 86400000);
+  const end = endDate ? new Date(endDate) : new Date();
+  const userId = req.params.userId as string;
 
-  const analytics = await getUsageByUser(req.params.userId, start, end);
+  const analytics = await getUsageByUser(userId, start, end);
   res.json(analytics);
 });
 
 adminRoutes.get('/analytics/top-users/:teamId', async (req: Request, res: Response) => {
-  const { startDate, endDate, limit } = req.query;
-  const start = startDate ? new Date(startDate as string) : new Date(Date.now() - 30 * 86400000);
-  const end = endDate ? new Date(endDate as string) : new Date();
+  const startDate = req.query.startDate as string | undefined;
+  const endDate = req.query.endDate as string | undefined;
+  const limit = req.query.limit as string | undefined;
+  const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 86400000);
+  const end = endDate ? new Date(endDate) : new Date();
+  const teamId = req.params.teamId as string;
 
-  const topUsers = await getTopUsers(req.params.teamId, start, end, Number(limit) || 10);
+  const topUsers = await getTopUsers(teamId, start, end, Number(limit) || 10);
   res.json(topUsers);
 });
 
 // --- Quota Status ---
 adminRoutes.get('/quota-status/:userId', async (req: Request, res: Response) => {
   const prisma = getPrisma();
-  const user = await prisma.user.findUnique({ where: { id: req.params.userId } });
+  const userId = req.params.userId as string;
+  const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) {
     res.status(404).json({ error: 'User not found' });
     return;
