@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  proxy:
+    build:
+      context: ..
+      dockerfile: packages/proxy/Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://marcelia:marcelia_secret@postgres:5432/marcelia?schema=public
+      - REDIS_URL=redis://redis:6379
+      - AZURE_FOUNDRY_ENDPOINT=${AZURE_FOUNDRY_ENDPOINT}
+      - AZURE_FOUNDRY_API_KEY=${AZURE_FOUNDRY_API_KEY}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_AUDIENCE=${AZURE_AUDIENCE:-api://marcelia}
+      - CORS_ORIGIN=*
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: marcelia
+      POSTGRES_PASSWORD: marcelia_secret
+      POSTGRES_DB: marcelia
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marcelia"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:

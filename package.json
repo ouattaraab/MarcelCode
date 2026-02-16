@@ -1,0 +1,24 @@
+{
+  "name": "marcelia",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Marcel'IA - Proxy & Extension VS Code pour Claude AI via Azure AI Foundry",
+  "workspaces": [
+    "packages/shared",
+    "packages/proxy",
+    "packages/extension"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "build:shared": "npm run build -w packages/shared",
+    "build:proxy": "npm run build -w packages/proxy",
+    "build:extension": "npm run build -w packages/extension",
+    "dev:proxy": "npm run dev -w packages/proxy",
+    "lint": "eslint 'packages/*/src/**/*.ts'",
+    "format": "prettier --write 'packages/*/src/**/*.ts'",
+    "clean": "rm -rf packages/*/dist packages/*/node_modules/.cache"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,141 @@
+{
+  "name": "marcelia-vscode",
+  "displayName": "Marcel'IA",
+  "description": "Assistant IA pour le développement - Propulsé par Claude via Azure AI Foundry",
+  "version": "1.0.0",
+  "publisher": "eranove-gs2e",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Other"
+  ],
+  "icon": "resources/icons/marcelia.png",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "marcelia.chat",
+        "title": "Marcel'IA: Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "marcelia.reviewCode",
+        "title": "Marcel'IA: Review Code"
+      },
+      {
+        "command": "marcelia.explainCode",
+        "title": "Marcel'IA: Explain Code"
+      },
+      {
+        "command": "marcelia.generateTests",
+        "title": "Marcel'IA: Generate Tests"
+      },
+      {
+        "command": "marcelia.generateDocs",
+        "title": "Marcel'IA: Generate Documentation"
+      },
+      {
+        "command": "marcelia.signIn",
+        "title": "Marcel'IA: Sign In"
+      },
+      {
+        "command": "marcelia.signOut",
+        "title": "Marcel'IA: Sign Out"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "marcelia",
+          "title": "Marcel'IA",
+          "icon": "resources/icons/marcelia.svg"
+        }
+      ]
+    },
+    "views": {
+      "marcelia": [
+        {
+          "type": "webview",
+          "id": "marcelia.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
+    "menus": {
+      "editor/context": [
+        {
+          "command": "marcelia.reviewCode",
+          "when": "editorHasSelection",
+          "group": "marcelia@1"
+        },
+        {
+          "command": "marcelia.explainCode",
+          "when": "editorHasSelection",
+          "group": "marcelia@2"
+        },
+        {
+          "command": "marcelia.generateTests",
+          "when": "editorHasSelection",
+          "group": "marcelia@3"
+        },
+        {
+          "command": "marcelia.generateDocs",
+          "when": "editorHasSelection",
+          "group": "marcelia@4"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Marcel'IA",
+      "properties": {
+        "marcelia.proxyUrl": {
+          "type": "string",
+          "default": "http://localhost:3000",
+          "description": "URL of the Marcel'IA proxy server"
+        },
+        "marcelia.completionEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline code completion"
+        },
+        "marcelia.completionDebounceMs": {
+          "type": "number",
+          "default": 300,
+          "description": "Debounce delay for inline completion (ms)"
+        },
+        "marcelia.preferredModel": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-4-5-20250929",
+            "claude-opus-4-6"
+          ],
+          "default": "auto",
+          "description": "Preferred AI model (auto = smart routing)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "webpack --mode production",
+    "dev": "webpack --mode development --watch",
+    "package": "vsce package",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "ts-loader": "^9.5.0",
+    "typescript": "^5.4.0",
+    "webpack": "^5.95.0",
+    "webpack-cli": "^5.1.0",
+    "@vscode/vsce": "^3.0.0"
+  }
+}

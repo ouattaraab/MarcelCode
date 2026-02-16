@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  proxy:
+    build:
+      context: ..
+      dockerfile: packages/proxy/Dockerfile
+      target: builder
+    command: npx tsx watch packages/proxy/src/index.ts
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - LOG_LEVEL=debug
+      - DATABASE_URL=postgresql://marcelia:marcelia_dev@postgres:5432/marcelia?schema=public
+      - REDIS_URL=redis://redis:6379
+      - AZURE_FOUNDRY_ENDPOINT=${AZURE_FOUNDRY_ENDPOINT}
+      - AZURE_FOUNDRY_API_KEY=${AZURE_FOUNDRY_API_KEY}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_AUDIENCE=${AZURE_AUDIENCE:-api://marcelia}
+      - CORS_ORIGIN=*
+    volumes:
+      - ../packages/shared/src:/app/packages/shared/src
+      - ../packages/proxy/src:/app/packages/proxy/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: marcelia
+      POSTGRES_PASSWORD: marcelia_dev
+      POSTGRES_DB: marcelia
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata_dev:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marcelia"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata_dev:

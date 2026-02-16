@@ -1,0 +1,93 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  developer
+  team_lead
+  admin
+}
+
+model User {
+  id             String     @id @default(uuid())
+  entraObjectId  String     @unique @map("entra_object_id")
+  email          String     @unique
+  displayName    String     @map("display_name")
+  role           UserRole   @default(developer)
+  teamId         String?    @map("team_id")
+  team           Team?      @relation(fields: [teamId], references: [id])
+  usageLogs      UsageLog[]
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model Team {
+  id           String       @id @default(uuid())
+  name         String       @unique
+  description  String?
+  users        User[]
+  quotaConfig  QuotaConfig?
+  budgetAlerts BudgetAlert[]
+  createdAt    DateTime     @default(now()) @map("created_at")
+  updatedAt    DateTime     @updatedAt @map("updated_at")
+
+  @@map("teams")
+}
+
+model UsageLog {
+  id            String   @id @default(uuid())
+  userId        String   @map("user_id")
+  user          User     @relation(fields: [userId], references: [id])
+  requestType   String   @map("request_type")
+  model         String
+  inputTokens   Int      @map("input_tokens")
+  outputTokens  Int      @map("output_tokens")
+  totalTokens   Int      @map("total_tokens")
+  latencyMs     Int      @map("latency_ms")
+  cached        Boolean  @default(false)
+  requestId     String   @map("request_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("usage_logs")
+}
+
+model QuotaConfig {
+  id                   String   @id @default(uuid())
+  entityType           String   @map("entity_type") // 'user' | 'team'
+  entityId             String   @map("entity_id")
+  teamId               String?  @unique @map("team_id")
+  team                 Team?    @relation(fields: [teamId], references: [id])
+  dailyTokenLimit      Int      @map("daily_token_limit") @default(500000)
+  monthlyTokenLimit    Int      @map("monthly_token_limit") @default(10000000)
+  maxRequestsPerMinute Int      @map("max_requests_per_minute") @default(20)
+  allowedModels        String[] @map("allowed_models")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@unique([entityType, entityId])
+  @@map("quota_configs")
+}
+
+model BudgetAlert {
+  id               String    @id @default(uuid())
+  entityType       String    @map("entity_type")
+  entityId         String    @map("entity_id")
+  teamId           String?   @map("team_id")
+  team             Team?     @relation(fields: [teamId], references: [id])
+  thresholdPercent Int       @map("threshold_percent")
+  notified         Boolean   @default(false)
+  notifiedAt       DateTime? @map("notified_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@unique([entityType, entityId, thresholdPercent])
+  @@map("budget_alerts")
+}
