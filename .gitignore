@@ -20,6 +20,7 @@ Thumbs.db
 # Build
 *.vsix
 *.tgz
+*.tsbuildinfo
 out/
 
 # Docker
