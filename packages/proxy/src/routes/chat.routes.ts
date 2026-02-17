@@ -27,11 +27,25 @@ chatRoutes.post('/', async (req: Request, res: Response) => {
 
     const startTime = Date.now();
 
+    // Build enriched system prompt with codebase context
+    let systemPrompt = body.systemPrompt || '';
+    if (body.codebaseContext) {
+      const { rootName, fileTree, files } = body.codebaseContext;
+      let codebaseSection = `\nYou have access to the user's workspace "${rootName}".\n\nFile tree:\n${fileTree}\n\nFile contents:\n`;
+      for (const file of files) {
+        codebaseSection += `--- ${file.path} (${file.language}) ---\n${file.content}\n--- end ---\n\n`;
+      }
+      codebaseSection += 'Answer questions about this codebase. Reference specific files and line numbers when relevant.';
+      systemPrompt = systemPrompt
+        ? `${systemPrompt}\n\n${codebaseSection}`
+        : `You are Marcel'IA, an AI coding assistant for ERANOVE/GS2E developers.\n${codebaseSection}`;
+    }
+
     const stream = await createStream({
       model,
       messages: body.messages,
       maxTokens: body.maxTokens || DEFAULT_MAX_TOKENS,
-      systemPrompt: body.systemPrompt,
+      systemPrompt: systemPrompt || body.systemPrompt,
     });
 
     const result = await forwardFoundryStream(stream, res, requestId);

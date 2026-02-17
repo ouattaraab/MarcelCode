@@ -114,6 +114,11 @@
           "default": false,
           "description": "Enable development mode (skip Azure AD authentication, connect to local proxy)"
         },
+        "marcelia.workspaceContextEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Inclure le contexte du workspace (fichiers source) dans les requêtes chat pour permettre l'analyse de codebase"
+        },
         "marcelia.preferredModel": {
           "type": "string",
           "enum": [

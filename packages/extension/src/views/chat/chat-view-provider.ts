@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ApiClient } from '../../services/api-client';
 import { parseSSEStream } from '../../services/streaming-client';
 import { collectContext } from '../../services/context-collector';
+import { WorkspaceScanner } from '../../services/workspace-scanner';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -18,11 +19,14 @@ const SLASH_COMMANDS: Record<string, string> = {
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private webviewView?: vscode.WebviewView;
   private history: ChatMessage[] = [];
+  private workspaceScanner: WorkspaceScanner;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly apiClient: ApiClient,
-  ) {}
+  ) {
+    this.workspaceScanner = new WorkspaceScanner();
+  }
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
     this.webviewView = webviewView;
@@ -78,11 +82,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     this.postToWebview({ type: 'assistantStart' });
 
     try {
+      // Build workspace context if enabled
+      const config = vscode.workspace.getConfiguration('marcelia');
+      const workspaceEnabled = config.get<boolean>('workspaceContextEnabled', true);
+      let codebaseContext: any = undefined;
+
+      if (workspaceEnabled) {
+        const wsContext = await this.workspaceScanner.getContext();
+        if (wsContext) {
+          codebaseContext = {
+            rootName: wsContext.rootName,
+            fileTree: wsContext.fileTree,
+            files: wsContext.files.map(f => ({
+              path: f.path,
+              language: f.language,
+              content: f.content,
+            })),
+          };
+          this.postToWebview({
+            type: 'workspaceInfo',
+            text: `Contexte workspace: ${wsContext.includedFiles}/${wsContext.totalFiles} fichiers`,
+          });
+        }
+      }
+
       const stream = await this.apiClient.postStream('/chat', {
         messages: this.history,
         systemPrompt: systemInfo
           ? `You are Marcel'IA, an AI coding assistant for ERANOVE/GS2E developers. ${systemInfo}`
           : "You are Marcel'IA, an AI coding assistant for ERANOVE/GS2E developers.",
+        codebaseContext,
       });
 
       let fullResponse = '';
@@ -240,12 +269,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       border-radius: 4px;
       margin-bottom: 16px;
     }
+    #workspace-info {
+      padding: 4px 12px;
+      font-size: 0.8em;
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-editor-background);
+      border-bottom: 1px solid var(--vscode-editorWidget-border);
+      display: none;
+    }
   </style>
 </head>
 <body>
   <div class="toolbar">
     <button id="clear-btn" title="Effacer l'historique">Effacer</button>
   </div>
+  <div id="workspace-info"></div>
   <div id="chat-container"></div>
   <div id="input-container">
     <textarea id="message-input" placeholder="Posez une question... (/test, /doc, /review, /explain)" rows="1"></textarea>
@@ -334,6 +372,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           errDiv.textContent = 'Erreur: ' + msg.text;
           chatContainer.appendChild(errDiv);
           chatContainer.scrollTop = chatContainer.scrollHeight;
+          break;
+        case 'workspaceInfo':
+          const wsInfo = document.getElementById('workspace-info');
+          wsInfo.textContent = msg.text;
+          wsInfo.style.display = 'block';
           break;
         case 'setInput':
           messageInput.value = msg.text;

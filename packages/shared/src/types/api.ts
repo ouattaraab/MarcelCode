@@ -11,6 +11,15 @@ export interface ChatRequest {
   maxTokens?: number;
   systemPrompt?: string;
   stream?: boolean;
+  codebaseContext?: {
+    rootName: string;
+    fileTree: string;
+    files: Array<{
+      path: string;
+      language: string;
+      content: string;
+    }>;
+  };
 }
 
 export interface CompletionRequest {
