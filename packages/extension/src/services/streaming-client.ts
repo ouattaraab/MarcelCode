@@ -10,6 +10,8 @@ export interface StreamCallbacks {
   onStopReason: (reason: string) => void;
   onDone: () => void;
   onError: (error: string) => void;
+  onToolStart?: (toolId: string, toolName: string) => void;
+  onToolInputDelta?: (toolId: string, toolName: string, partialJson: string) => void;
 }
 
 export async function parseSSEStream(
@@ -64,11 +66,13 @@ export async function parseSSEStream(
               currentToolId = parsed.content_block.id;
               currentToolName = parsed.content_block.name;
               jsonAccumulator = '';
+              callbacks.onToolStart?.(currentToolId, currentToolName);
             }
 
             // Tool use JSON input streaming
             if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'input_json_delta') {
               jsonAccumulator += parsed.delta.partial_json;
+              callbacks.onToolInputDelta?.(currentToolId, currentToolName, parsed.delta.partial_json);
             }
 
             // Tool use block done — emit the complete tool call

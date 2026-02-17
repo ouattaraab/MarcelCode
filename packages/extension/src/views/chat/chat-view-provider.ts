@@ -3,10 +3,12 @@ import { ApiClient } from '../../services/api-client';
 import { parseSSEStream, ToolCallData } from '../../services/streaming-client';
 import { collectContext } from '../../services/context-collector';
 import { WorkspaceScanner } from '../../services/workspace-scanner';
+import { JsonContentExtractor } from '../../services/json-content-extractor';
+import { StreamingEditorManager } from '../../services/streaming-editor';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
-  content: string | any[];  // string for text, array for content blocks (tool_use, tool_result)
+  content: string | any[];
 }
 
 interface PendingToolResult {
@@ -28,12 +30,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private webviewView?: vscode.WebviewView;
   private history: ChatMessage[] = [];
   private workspaceScanner: WorkspaceScanner;
+  private streamingEditor: StreamingEditorManager;
+  private activeExtractors: Map<string, JsonContentExtractor> = new Map();
+  private pendingConfirmations: Map<string, { resolve: (approved: boolean) => void }> = new Map();
+  private streamedToolPaths: Map<string, string> = new Map();
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly apiClient: ApiClient,
   ) {
     this.workspaceScanner = new WorkspaceScanner();
+    this.streamingEditor = new StreamingEditorManager();
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -54,9 +61,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'clearHistory':
           this.history = [];
           break;
-        case 'toolApproval':
-          // Handled via promise resolution in tool execution
+        case 'toolApproval': {
+          const pending = this.pendingConfirmations.get(message.toolId);
+          if (pending) {
+            this.pendingConfirmations.delete(message.toolId);
+            pending.resolve(message.approved);
+          }
           break;
+        }
       }
     });
   }
@@ -68,7 +80,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleUserMessage(text: string) {
-    // Parse slash commands
     let processedText = text;
     for (const [cmd, prompt] of Object.entries(SLASH_COMMANDS)) {
       if (text.startsWith(cmd)) {
@@ -77,7 +88,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    // Collect current editor context
     const ctx = collectContext();
     let systemInfo = '';
     if (ctx.currentFile) {
@@ -86,12 +96,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.history.push({ role: 'user', content: processedText });
 
-    // Show user message
     this.postToWebview({ type: 'userMessage', text });
     this.postToWebview({ type: 'assistantStart' });
 
     try {
-      // Build lightweight workspace context: file tree + active file only
       const config = vscode.workspace.getConfiguration('marcelia');
       const workspaceEnabled = config.get<boolean>('workspaceContextEnabled', true);
       let codebaseContext: any = undefined;
@@ -101,7 +109,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (treeCtx) {
           const activeFiles: Array<{ path: string; language: string; content: string }> = [];
 
-          // Include active file content (small, relevant)
           if (ctx.currentFile) {
             const relPath = vscode.workspace.asRelativePath(ctx.currentFile, false);
             const fileContent = await this.workspaceScanner.readFile(relPath);
@@ -131,7 +138,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ? `Tu es Marcel'IA, un assistant IA de développement pour les développeurs ERANOVE/GS2E. Réponds toujours en français. ${systemInfo}`
         : "Tu es Marcel'IA, un assistant IA de développement pour les développeurs ERANOVE/GS2E. Réponds toujours en français.";
 
-      // Tool execution loop
       await this.streamWithToolLoop(systemPrompt, codebaseContext);
 
     } catch (err) {
@@ -168,14 +174,50 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         fullResponse += text;
         this.postToWebview({ type: 'assistantDelta', text });
       },
+
+      onToolStart: (toolId, toolName) => {
+        this.postToWebview({ type: 'toolStart', toolId, toolName });
+
+        // For write_file, set up real-time content extraction
+        if (toolName === 'write_file') {
+          const extractor = new JsonContentExtractor({
+            watchKeys: ['path', 'content'],
+            streamKey: 'content',
+            onEvent: (event) => {
+              if (event.type === 'key_value' && event.key === 'path') {
+                this.streamedToolPaths.set(toolId, event.value);
+                this.postToWebview({ type: 'toolPath', toolId, path: event.value });
+                this.startStreamingToEditor(event.value);
+              } else if (event.type === 'content_chunk') {
+                this.streamingEditor.appendContent(event.value);
+              } else if (event.type === 'content_done') {
+                this.streamingEditor.finalize();
+                this.postToWebview({ type: 'toolContentDone', toolId });
+              }
+            },
+          });
+          this.activeExtractors.set(toolId, extractor);
+        }
+      },
+
+      onToolInputDelta: (toolId, _toolName, partialJson) => {
+        const extractor = this.activeExtractors.get(toolId);
+        if (extractor) {
+          extractor.feed(partialJson);
+        }
+      },
+
       onToolUse: (toolCall) => {
+        this.activeExtractors.delete(toolCall.id);
         pendingToolCalls.push(toolCall);
         this.postToWebview({
           type: 'toolAction',
+          toolId: toolCall.id,
           tool: toolCall.name,
           path: toolCall.input.path || '',
         });
       },
+
       onStopReason: (reason) => {
         stopReason = reason;
       },
@@ -185,9 +227,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       },
     });
 
-    // If Claude stopped because it wants to use tools
     if (stopReason === 'tool_use' && pendingToolCalls.length > 0) {
-      // Build full assistant content with text + tool_use blocks (required by Anthropic API)
       const assistantContent: any[] = [];
       if (fullResponse) {
         assistantContent.push({ type: 'text', text: fullResponse });
@@ -197,7 +237,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       this.history.push({ role: 'assistant', content: assistantContent });
 
-      // Execute each tool call and build tool_result content blocks
       const toolResultBlocks: any[] = [];
       for (const toolCall of pendingToolCalls) {
         const result = await this.executeTool(toolCall);
@@ -209,22 +248,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
       }
 
-      // Push tool results as a user message (Anthropic API requires this after tool_use)
       this.history.push({ role: 'user', content: toolResultBlocks });
-
-      // Continue the conversation — history now has the full context
       await this.streamWithToolLoop(systemPrompt, codebaseContext, round + 1);
     } else {
-      // Final response — done
       this.history.push({ role: 'assistant', content: fullResponse });
       this.postToWebview({ type: 'assistantDone' });
     }
+  }
+
+  private async startStreamingToEditor(relativePath: string): Promise<void> {
+    const rootFolder = this.workspaceScanner.getRootFolder();
+    if (!rootFolder) return;
+    await this.streamingEditor.openForStreaming(rootFolder, relativePath);
   }
 
   private async executeTool(toolCall: ToolCallData): Promise<PendingToolResult> {
     const { id, name, input } = toolCall;
     const config = vscode.workspace.getConfiguration('marcelia');
     const confirmLevel = config.get<string>('toolConfirmation', 'write-only');
+    const rootFolder = this.workspaceScanner.getRootFolder();
 
     try {
       switch (name) {
@@ -233,31 +275,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (!file) {
             return { toolCallId: id, content: `Error: file not found: ${input.path}`, isError: true };
           }
-          this.postToWebview({ type: 'assistantDelta', text: `\n📖 Lu: ${input.path}\n` });
+          this.postToWebview({ type: 'toolStatus', toolId: id, status: 'done', label: `Lu: ${input.path}` });
           return { toolCallId: id, content: file.content };
         }
 
         case 'write_file': {
+          const wasStreamed = this.streamedToolPaths.has(id);
+          this.streamedToolPaths.delete(id);
+
           if (confirmLevel === 'always' || confirmLevel === 'write-only') {
-            const confirmed = await this.askConfirmation(`Créer/écrire: ${input.path}`);
+            const confirmed = await this.requestInlineConfirmation(id, `Créer/écrire: ${input.path}`);
             if (!confirmed) {
+              // Revert the streamed file
+              if (wasStreamed && rootFolder) {
+                await this.streamingEditor.revert(rootFolder, input.path);
+              }
+              this.postToWebview({ type: 'toolStatus', toolId: id, status: 'denied', label: `Refusé: ${input.path}` });
               return { toolCallId: id, content: 'User denied the file write operation.', isError: true };
             }
           }
+
+          // If already streamed to editor, just verify it's saved
+          if (wasStreamed) {
+            this.postToWebview({ type: 'toolStatus', toolId: id, status: 'done', label: `Créé: ${input.path}` });
+            return { toolCallId: id, content: `File written successfully: ${input.path}` };
+          }
+
+          // Fallback: streaming didn't happen, write normally
           const success = await this.workspaceScanner.writeFile(input.path, input.content);
           if (!success) {
             return { toolCallId: id, content: `Error: could not write file: ${input.path}`, isError: true };
           }
-          this.postToWebview({ type: 'assistantDelta', text: `\n✅ Créé: ${input.path}\n` });
-          // Open the file in editor
           await this.openFileInEditor(input.path);
+          this.postToWebview({ type: 'toolStatus', toolId: id, status: 'done', label: `Créé: ${input.path}` });
           return { toolCallId: id, content: `File written successfully: ${input.path}` };
         }
 
         case 'edit_file': {
           if (confirmLevel === 'always' || confirmLevel === 'write-only') {
-            const confirmed = await this.askConfirmation(`Modifier: ${input.path}`);
+            const confirmed = await this.requestInlineConfirmation(id, `Modifier: ${input.path}`);
             if (!confirmed) {
+              this.postToWebview({ type: 'toolStatus', toolId: id, status: 'denied', label: `Refusé: ${input.path}` });
               return { toolCallId: id, content: 'User denied the file edit operation.', isError: true };
             }
           }
@@ -265,8 +323,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (!success) {
             return { toolCallId: id, content: `Error: could not edit file (text not found): ${input.path}`, isError: true };
           }
-          this.postToWebview({ type: 'assistantDelta', text: `\n✏️ Modifié: ${input.path}\n` });
           await this.openFileInEditor(input.path);
+          this.postToWebview({ type: 'toolStatus', toolId: id, status: 'done', label: `Modifié: ${input.path}` });
           return { toolCallId: id, content: `File edited successfully: ${input.path}` };
         }
 
@@ -275,12 +333,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           if (!success) {
             return { toolCallId: id, content: `Error: could not create directory: ${input.path}`, isError: true };
           }
-          this.postToWebview({ type: 'assistantDelta', text: `\n📁 Dossier créé: ${input.path}\n` });
+          this.postToWebview({ type: 'toolStatus', toolId: id, status: 'done', label: `Dossier créé: ${input.path}` });
           return { toolCallId: id, content: `Directory created: ${input.path}` };
         }
 
         case 'list_files': {
           const files = await this.workspaceScanner.listFiles(input.path, input.pattern);
+          this.postToWebview({ type: 'toolStatus', toolId: id, status: 'done', label: `${files.length} fichiers listés` });
           return { toolCallId: id, content: files.join('\n') || 'No files found.' };
         }
 
@@ -293,25 +352,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async askConfirmation(action: string): Promise<boolean> {
-    const result = await vscode.window.showInformationMessage(
-      `Marcel'IA veut: ${action}`,
-      { modal: false },
-      'Autoriser',
-      'Refuser',
-    );
-    return result === 'Autoriser';
+  private requestInlineConfirmation(toolId: string, action: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.pendingConfirmations.set(toolId, { resolve });
+      this.postToWebview({ type: 'toolConfirmation', toolId, action });
+
+      // Auto-deny after 60 seconds
+      setTimeout(() => {
+        if (this.pendingConfirmations.has(toolId)) {
+          this.pendingConfirmations.delete(toolId);
+          resolve(false);
+        }
+      }, 60000);
+    });
   }
 
   private async openFileInEditor(relativePath: string): Promise<void> {
     const rootFolder = this.workspaceScanner.getRootFolder();
     if (!rootFolder) return;
     const uri = vscode.Uri.joinPath(rootFolder.uri, relativePath);
-    try {
-      const doc = await vscode.workspace.openTextDocument(uri);
-      await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
-    } catch {
-      // File may not exist yet or be binary
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const doc = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(doc, {
+          preview: false,
+          preserveFocus: true,
+          viewColumn: vscode.ViewColumn.Beside,
+        });
+        return;
+      } catch {
+        if (attempt === 0) {
+          await new Promise(r => setTimeout(r, 200));
+        }
+      }
     }
   }
 
@@ -457,6 +531,81 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       border-bottom: 1px solid var(--vscode-editorWidget-border);
       display: none;
     }
+    .tool-card {
+      margin: 8px 0;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--vscode-editorWidget-border);
+      background: var(--vscode-editor-background);
+      font-size: 0.9em;
+      white-space: normal;
+    }
+    .tool-card .tool-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 500;
+      margin-bottom: 2px;
+    }
+    .tool-card .tool-path {
+      color: var(--vscode-textLink-foreground);
+      font-family: var(--vscode-editor-font-family);
+      font-size: 0.85em;
+      margin-bottom: 2px;
+    }
+    .tool-card .tool-status {
+      font-size: 0.85em;
+      color: var(--vscode-descriptionForeground);
+      font-style: italic;
+    }
+    .tool-card .tool-status.writing {
+      color: var(--vscode-charts-yellow, #cca700);
+    }
+    .tool-card .tool-status.done {
+      color: var(--vscode-charts-green, #388a34);
+    }
+    .tool-card .tool-status.denied {
+      color: var(--vscode-errorForeground);
+    }
+    .tool-card .tool-progress {
+      height: 2px;
+      background: var(--vscode-progressBar-background);
+      margin-top: 4px;
+      border-radius: 1px;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 1; }
+    }
+    .tool-card .confirm-btns {
+      display: flex;
+      gap: 8px;
+      margin-top: 6px;
+      align-items: center;
+    }
+    .tool-card .confirm-btns .confirm-label {
+      font-size: 0.85em;
+      flex: 1;
+    }
+    .tool-card .confirm-btns button {
+      padding: 3px 10px;
+      border-radius: 3px;
+      border: none;
+      cursor: pointer;
+      font-size: 0.85em;
+    }
+    .tool-card .btn-approve {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    .tool-card .btn-approve:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+    .tool-card .btn-deny {
+      background: var(--vscode-button-secondaryBackground, #333);
+      color: var(--vscode-button-secondaryForeground, #fff);
+    }
   </style>
 </head>
 <body>
@@ -478,6 +627,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let currentAssistantEl = null;
     let isStreaming = false;
 
+    const TOOL_ICONS = {
+      'write_file': '\\u{1F4DD}',
+      'read_file': '\\u{1F4D6}',
+      'edit_file': '\\u270F\\uFE0F',
+      'create_directory': '\\u{1F4C1}',
+      'list_files': '\\u{1F4CB}',
+    };
+
+    const TOOL_LABELS = {
+      'write_file': 'Cr\\u00e9ation de fichier',
+      'read_file': 'Lecture de fichier',
+      'edit_file': 'Modification de fichier',
+      'create_directory': 'Cr\\u00e9ation de dossier',
+      'list_files': 'Liste des fichiers',
+    };
+
     function addMessage(role, text) {
       const div = document.createElement('div');
       div.className = 'message ' + role;
@@ -491,6 +656,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       const div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML;
+    }
+
+    function getOrCreateToolCard(toolId, toolName) {
+      let card = document.getElementById('tool-' + toolId);
+      if (card) return card;
+
+      // Make sure typing indicator is removed
+      if (currentAssistantEl) {
+        const content = currentAssistantEl.querySelector('.content');
+        const typing = content.querySelector('.typing-indicator');
+        if (typing) typing.remove();
+      }
+
+      card = document.createElement('div');
+      card.className = 'tool-card';
+      card.id = 'tool-' + toolId;
+
+      const icon = TOOL_ICONS[toolName] || '\\u{1F527}';
+      const label = TOOL_LABELS[toolName] || toolName;
+
+      card.innerHTML =
+        '<div class="tool-header"><span>' + icon + '</span><span>' + label + '</span></div>' +
+        '<div class="tool-path"></div>' +
+        '<div class="tool-status writing">En cours...</div>' +
+        '<div class="tool-progress"></div>';
+
+      if (currentAssistantEl) {
+        currentAssistantEl.querySelector('.content').appendChild(card);
+      } else {
+        chatContainer.appendChild(card);
+      }
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+      return card;
     }
 
     function sendMessage() {
@@ -535,7 +733,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const content = currentAssistantEl.querySelector('.content');
             const typing = content.querySelector('.typing-indicator');
             if (typing) typing.remove();
-            content.textContent += msg.text;
+            content.appendChild(document.createTextNode(msg.text));
           }
           chatContainer.scrollTop = chatContainer.scrollHeight;
           break;
@@ -544,14 +742,83 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           sendBtn.disabled = false;
           currentAssistantEl = null;
           break;
-        case 'toolAction':
-          if (currentAssistantEl) {
-            const content = currentAssistantEl.querySelector('.content');
-            const typing = content.querySelector('.typing-indicator');
-            if (typing) typing.remove();
+
+        // Tool lifecycle events
+        case 'toolStart': {
+          getOrCreateToolCard(msg.toolId, msg.toolName);
+          break;
+        }
+        case 'toolPath': {
+          const card = document.getElementById('tool-' + msg.toolId);
+          if (card) {
+            card.querySelector('.tool-path').textContent = msg.path;
           }
           chatContainer.scrollTop = chatContainer.scrollHeight;
           break;
+        }
+        case 'toolContentDone': {
+          const card = document.getElementById('tool-' + msg.toolId);
+          if (card) {
+            const status = card.querySelector('.tool-status');
+            status.textContent = '\\u00c9criture termin\\u00e9e';
+            status.className = 'tool-status done';
+            const bar = card.querySelector('.tool-progress');
+            if (bar) bar.remove();
+          }
+          break;
+        }
+        case 'toolAction': {
+          const card = getOrCreateToolCard(msg.toolId || msg.tool, msg.tool);
+          if (msg.path && card) {
+            card.querySelector('.tool-path').textContent = msg.path;
+          }
+          break;
+        }
+        case 'toolStatus': {
+          const card = document.getElementById('tool-' + msg.toolId);
+          if (card) {
+            const status = card.querySelector('.tool-status');
+            status.textContent = msg.label;
+            status.className = 'tool-status ' + msg.status;
+            const bar = card.querySelector('.tool-progress');
+            if (bar) bar.remove();
+          }
+          break;
+        }
+        case 'toolConfirmation': {
+          const card = document.getElementById('tool-' + msg.toolId);
+          const target = card || currentAssistantEl?.querySelector('.content');
+          if (!target) break;
+
+          // Remove progress bar during confirmation
+          if (card) {
+            const bar = card.querySelector('.tool-progress');
+            if (bar) bar.remove();
+            const status = card.querySelector('.tool-status');
+            if (status) status.textContent = 'En attente de confirmation...';
+          }
+
+          const btns = document.createElement('div');
+          btns.className = 'confirm-btns';
+          btns.innerHTML =
+            '<span class="confirm-label">' + escapeHtml(msg.action) + '</span>' +
+            '<button class="btn-approve">Autoriser</button>' +
+            '<button class="btn-deny">Refuser</button>';
+
+          btns.querySelector('.btn-approve').addEventListener('click', () => {
+            vscode.postMessage({ type: 'toolApproval', toolId: msg.toolId, approved: true });
+            btns.innerHTML = '<span class="tool-status done">Autoris\\u00e9</span>';
+          });
+          btns.querySelector('.btn-deny').addEventListener('click', () => {
+            vscode.postMessage({ type: 'toolApproval', toolId: msg.toolId, approved: false });
+            btns.innerHTML = '<span class="tool-status denied">Refus\\u00e9</span>';
+          });
+
+          (card || target).appendChild(btns);
+          chatContainer.scrollTop = chatContainer.scrollHeight;
+          break;
+        }
+
         case 'error':
           isStreaming = false;
           sendBtn.disabled = false;

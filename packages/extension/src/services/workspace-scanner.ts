@@ -112,6 +112,12 @@ export class WorkspaceScanner {
 
     const uri = vscode.Uri.joinPath(rootFolder.uri, relativePath);
     try {
+      // Auto-créer les dossiers parents si nécessaire
+      const parentPath = relativePath.split('/').slice(0, -1).join('/');
+      if (parentPath) {
+        const parentUri = vscode.Uri.joinPath(rootFolder.uri, parentPath);
+        await vscode.workspace.fs.createDirectory(parentUri);
+      }
       await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(content));
       this.treeCacheValid = false;
       return true;
