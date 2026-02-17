@@ -46,14 +46,21 @@ export function activate(context: vscode.ExtensionContext) {
   // Register commands
   registerCommands(context, authProvider, apiClient, chatViewProvider);
 
-  // Auto-sign in silently
-  authProvider.getSession().then((session) => {
-    if (session) {
-      vscode.window.showInformationMessage(
-        `Marcel'IA: Connecté en tant que ${session.account.label}`,
-      );
-    }
-  });
+  // Auto-sign in silently (skip in devMode)
+  const devMode = vscode.workspace.getConfiguration('marcelia').get('devMode', false);
+  if (devMode) {
+    vscode.window.showInformationMessage("Marcel'IA: Mode développement activé (proxy local)");
+  } else {
+    authProvider.getSession().then((session) => {
+      if (session) {
+        vscode.window.showInformationMessage(
+          `Marcel'IA: Connecté en tant que ${session.account.label}`,
+        );
+      }
+    }).catch(() => {
+      // Silent auth failed, user can sign in manually
+    });
+  }
 
   // Status bar
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);

@@ -46,18 +46,23 @@ export async function forwardFoundryStream(
   let outputTokens = 0;
 
   try {
-    stream.on('message', (event: any) => {
+    // Iterate raw events to forward each one (content_block_delta, etc.) in real-time
+    for await (const event of stream) {
       sendSSEEvent(res, event.type, event);
-    });
 
-    stream.on('text', (text: string) => {
-      fullContent += text;
-    });
-
-    const finalMessage = await stream.finalMessage();
-    messageId = finalMessage.id;
-    inputTokens = finalMessage.usage?.input_tokens || 0;
-    outputTokens = finalMessage.usage?.output_tokens || 0;
+      if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
+        fullContent += event.delta.text;
+      }
+      if (event.type === 'message_start' && event.message?.id) {
+        messageId = event.message.id;
+      }
+      if (event.type === 'message_delta' && event.usage) {
+        outputTokens = event.usage.output_tokens || 0;
+      }
+      if (event.type === 'message_start' && event.message?.usage) {
+        inputTokens = event.message.usage.input_tokens || 0;
+      }
+    }
 
     sendSSEDone(res);
 

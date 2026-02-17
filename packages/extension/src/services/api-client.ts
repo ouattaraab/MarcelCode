@@ -15,6 +15,11 @@ export class ApiClient {
   }
 
   private async getHeaders(): Promise<Record<string, string>> {
+    const devMode = vscode.workspace.getConfiguration('marcelia').get('devMode', false);
+    if (devMode) {
+      return { 'Content-Type': 'application/json' };
+    }
+
     const token = await this.authProvider.getAccessToken();
     if (!token) {
       throw new Error('Not authenticated. Please sign in first.');

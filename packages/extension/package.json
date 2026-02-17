@@ -1,7 +1,7 @@
 {
   "name": "marcelia-vscode",
   "displayName": "Marcel'IA",
-  "description": "Assistant IA pour le développement - Propulsé par Claude via Azure AI Foundry",
+  "description": "Assistant IA pour le développement - Propulsé par Claude",
   "version": "1.0.0",
   "publisher": "eranove-gs2e",
   "engines": {
@@ -108,6 +108,11 @@
           "type": "number",
           "default": 300,
           "description": "Debounce delay for inline completion (ms)"
+        },
+        "marcelia.devMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable development mode (skip Azure AD authentication, connect to local proxy)"
         },
         "marcelia.preferredModel": {
           "type": "string",
