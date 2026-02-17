@@ -8,12 +8,12 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 
-  AZURE_FOUNDRY_ENDPOINT: z.string().url(),
+  AZURE_FOUNDRY_ENDPOINT: z.string().url().default('https://placeholder.services.ai.azure.com'),
   AZURE_FOUNDRY_API_KEY: z.string().optional(),
   AZURE_USE_MANAGED_IDENTITY: z.coerce.boolean().default(false),
 
-  AZURE_TENANT_ID: z.string(),
-  AZURE_CLIENT_ID: z.string(),
+  AZURE_TENANT_ID: z.string().default('00000000-0000-0000-0000-000000000000'),
+  AZURE_CLIENT_ID: z.string().default('00000000-0000-0000-0000-000000000000'),
   AZURE_AUDIENCE: z.string().default('api://marcelia'),
 
   DATABASE_URL: z.string().url(),
@@ -28,7 +28,12 @@ const envSchema = z.object({
 export type Env = z.infer<typeof envSchema>;
 
 function loadEnv(): Env {
-  const result = envSchema.safeParse(process.env);
+  // Treat empty strings as undefined so Zod defaults apply
+  const cleaned: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    cleaned[key] = value === '' ? undefined : value;
+  }
+  const result = envSchema.safeParse(cleaned);
   if (!result.success) {
     console.error('Invalid environment variables:');
     console.error(result.error.format());
