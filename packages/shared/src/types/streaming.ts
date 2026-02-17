@@ -18,6 +18,17 @@ export interface ContentDelta {
   text: string;
 }
 
+export interface InputJsonDelta {
+  type: 'input_json_delta';
+  partial_json: string;
+}
+
+export interface ToolUseBlock {
+  type: 'tool_use';
+  id: string;
+  name: string;
+}
+
 export interface MessageStartData {
   type: 'message_start';
   message: {

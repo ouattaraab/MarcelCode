@@ -31,6 +31,7 @@ export interface StreamResult {
   content: string;
   usage: TokenUsage;
   messageId: string;
+  stopReason: string | null;
 }
 
 export async function forwardFoundryStream(
@@ -44,9 +45,9 @@ export async function forwardFoundryStream(
   let messageId = '';
   let inputTokens = 0;
   let outputTokens = 0;
+  let stopReason: string | null = null;
 
   try {
-    // Iterate raw events to forward each one (content_block_delta, etc.) in real-time
     for await (const event of stream) {
       sendSSEEvent(res, event.type, event);
 
@@ -56,8 +57,13 @@ export async function forwardFoundryStream(
       if (event.type === 'message_start' && event.message?.id) {
         messageId = event.message.id;
       }
-      if (event.type === 'message_delta' && event.usage) {
-        outputTokens = event.usage.output_tokens || 0;
+      if (event.type === 'message_delta') {
+        if (event.usage) {
+          outputTokens = event.usage.output_tokens || 0;
+        }
+        if (event.delta?.stop_reason) {
+          stopReason = event.delta.stop_reason;
+        }
       }
       if (event.type === 'message_start' && event.message?.usage) {
         inputTokens = event.message.usage.input_tokens || 0;
@@ -74,6 +80,7 @@ export async function forwardFoundryStream(
         totalTokens: inputTokens + outputTokens,
       },
       messageId,
+      stopReason,
     };
   } catch (err) {
     logger.error({ err, requestId }, 'Streaming error');

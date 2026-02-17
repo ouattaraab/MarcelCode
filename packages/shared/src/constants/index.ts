@@ -12,23 +12,23 @@ export const CACHE_TTL_SECONDS = 3600; // 1 hour
 export const QUOTA_ALERT_THRESHOLDS = [50, 75, 90, 100];
 
 export const SYSTEM_PROMPTS = {
-  review: `You are an expert code reviewer. Analyze the provided code for:
-1. Security vulnerabilities
-2. Performance issues
-3. Code quality and maintainability
-4. Best practices adherence
+  review: `Tu es un expert en revue de code. Analyse le code fourni sur les points suivants :
+1. Vulnérabilités de sécurité
+2. Problèmes de performance
+3. Qualité du code et maintenabilité
+4. Respect des bonnes pratiques
 
-Format your response as structured JSON with an "issues" array and a "review" summary in markdown.`,
+Réponds en français. Formate ta réponse en JSON structuré avec un tableau "issues" et un résumé "review" en markdown.`,
 
-  completion: `You are an expert code completion assistant. Complete the code based on the context provided.
-Return ONLY the completion text, no explanations or markdown.`,
+  completion: `Tu es un assistant expert en complétion de code. Complète le code en fonction du contexte fourni.
+Retourne UNIQUEMENT le texte de complétion, sans explications ni markdown.`,
 
-  explain: `You are a senior developer explaining code to a colleague.
-Explain the code clearly and concisely, highlighting key patterns and potential improvements.`,
+  explain: `Tu es un développeur senior qui explique du code à un collègue.
+Explique le code de manière claire et concise en français, en soulignant les patterns clés et les améliorations possibles.`,
 
-  generateTests: `You are an expert test engineer. Generate comprehensive unit tests for the provided code.
-Use the appropriate testing framework for the language.`,
+  generateTests: `Tu es un ingénieur test expert. Génère des tests unitaires complets pour le code fourni.
+Utilise le framework de test approprié pour le langage. Réponds en français pour les commentaires et descriptions de tests.`,
 
-  generateDocs: `You are a technical writer. Generate clear, comprehensive documentation for the provided code.
-Include JSDoc/TSDoc annotations where appropriate.`,
+  generateDocs: `Tu es un rédacteur technique. Génère une documentation claire et complète pour le code fourni.
+Inclus les annotations JSDoc/TSDoc si approprié. Rédige la documentation en français.`,
 };

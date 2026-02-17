@@ -21,32 +21,32 @@
     "commands": [
       {
         "command": "marcelia.chat",
-        "title": "Marcel'IA: Open Chat",
+        "title": "Marcel'IA: Ouvrir le Chat",
         "icon": "$(comment-discussion)"
       },
       {
         "command": "marcelia.reviewCode",
-        "title": "Marcel'IA: Review Code"
+        "title": "Marcel'IA: Revue de Code"
       },
       {
         "command": "marcelia.explainCode",
-        "title": "Marcel'IA: Explain Code"
+        "title": "Marcel'IA: Expliquer le Code"
       },
       {
         "command": "marcelia.generateTests",
-        "title": "Marcel'IA: Generate Tests"
+        "title": "Marcel'IA: Générer des Tests"
       },
       {
         "command": "marcelia.generateDocs",
-        "title": "Marcel'IA: Generate Documentation"
+        "title": "Marcel'IA: Générer la Documentation"
       },
       {
         "command": "marcelia.signIn",
-        "title": "Marcel'IA: Sign In"
+        "title": "Marcel'IA: Se Connecter"
       },
       {
         "command": "marcelia.signOut",
-        "title": "Marcel'IA: Sign Out"
+        "title": "Marcel'IA: Se Déconnecter"
       }
     ],
     "viewsContainers": {
@@ -97,27 +97,33 @@
         "marcelia.proxyUrl": {
           "type": "string",
           "default": "http://localhost:3000",
-          "description": "URL of the Marcel'IA proxy server"
+          "description": "URL du serveur proxy Marcel'IA"
         },
         "marcelia.completionEnabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable inline code completion"
+          "description": "Activer la complétion de code en ligne"
         },
         "marcelia.completionDebounceMs": {
           "type": "number",
           "default": 300,
-          "description": "Debounce delay for inline completion (ms)"
+          "description": "Délai de debounce pour la complétion en ligne (ms)"
         },
         "marcelia.devMode": {
           "type": "boolean",
           "default": false,
-          "description": "Enable development mode (skip Azure AD authentication, connect to local proxy)"
+          "description": "Activer le mode développement (ignorer l'authentification Azure AD, se connecter au proxy local)"
         },
         "marcelia.workspaceContextEnabled": {
           "type": "boolean",
           "default": true,
           "description": "Inclure le contexte du workspace (fichiers source) dans les requêtes chat pour permettre l'analyse de codebase"
+        },
+        "marcelia.toolConfirmation": {
+          "type": "string",
+          "enum": ["always", "write-only", "never"],
+          "default": "write-only",
+          "description": "Quand demander confirmation pour les opérations fichiers (always = toujours, write-only = écriture/modification seulement, never = automatique)"
         },
         "marcelia.preferredModel": {
           "type": "string",
@@ -128,7 +134,7 @@
             "claude-opus-4-6"
           ],
           "default": "auto",
-          "description": "Preferred AI model (auto = smart routing)"
+          "description": "Modèle IA préféré (auto = routage intelligent)"
         }
       }
     }

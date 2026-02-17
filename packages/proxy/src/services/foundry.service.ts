@@ -16,20 +16,27 @@ function getClient(): Anthropic {
 
 export interface FoundryStreamOptions {
   model: ModelId;
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+  messages: Array<{ role: string; content: any }>;
   maxTokens: number;
   systemPrompt?: string;
+  tools?: Array<{ name: string; description: string; input_schema: any }>;
 }
 
 export async function createStream(options: FoundryStreamOptions) {
   const anthropic = getClient();
 
-  const stream = anthropic.messages.stream({
+  const params: any = {
     model: options.model,
     max_tokens: options.maxTokens,
     system: options.systemPrompt || undefined,
     messages: options.messages,
-  });
+  };
+
+  if (options.tools && options.tools.length > 0) {
+    params.tools = options.tools;
+  }
+
+  const stream = anthropic.messages.stream(params);
 
   return stream;
 }
@@ -37,12 +44,18 @@ export async function createStream(options: FoundryStreamOptions) {
 export async function createMessage(options: FoundryStreamOptions) {
   const anthropic = getClient();
 
-  const response = await anthropic.messages.create({
+  const params: any = {
     model: options.model,
     max_tokens: options.maxTokens,
     system: options.systemPrompt || undefined,
     messages: options.messages,
-  });
+  };
+
+  if (options.tools && options.tools.length > 0) {
+    params.tools = options.tools;
+  }
+
+  const response = await anthropic.messages.create(params);
 
   return response;
 }

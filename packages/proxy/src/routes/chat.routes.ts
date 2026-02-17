@@ -7,6 +7,67 @@ import { getCachedResponse, setCachedResponse } from '../services/cache.service'
 import { trackUsage } from '../services/usage.service';
 import { logger } from '../config';
 
+const WORKSPACE_TOOLS = [
+  {
+    name: 'read_file',
+    description: 'Read the contents of a file from the workspace. Use this to examine source code before answering questions or making changes.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        path: { type: 'string', description: 'Relative file path from workspace root' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'write_file',
+    description: 'Create a new file or overwrite an existing file in the workspace.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        path: { type: 'string', description: 'Relative file path from workspace root' },
+        content: { type: 'string', description: 'Complete file content to write' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'edit_file',
+    description: 'Edit a file by replacing a specific text section. The old_text must match exactly.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        path: { type: 'string', description: 'Relative file path from workspace root' },
+        old_text: { type: 'string', description: 'Exact text to find in the file' },
+        new_text: { type: 'string', description: 'Text to replace it with' },
+      },
+      required: ['path', 'old_text', 'new_text'],
+    },
+  },
+  {
+    name: 'create_directory',
+    description: 'Create a directory and any parent directories needed.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        path: { type: 'string', description: 'Relative directory path from workspace root' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'list_files',
+    description: 'List files in a directory, optionally filtered by glob pattern.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        path: { type: 'string', description: 'Relative directory path (empty for root)' },
+        pattern: { type: 'string', description: 'Glob pattern filter (e.g. "*.ts")' },
+      },
+    },
+  },
+];
+
 export const chatRoutes = Router();
 
 chatRoutes.post('/', async (req: Request, res: Response) => {
@@ -17,35 +78,54 @@ chatRoutes.post('/', async (req: Request, res: Response) => {
   try {
     const model = routeRequest('chat', body.model, user);
 
-    // Check cache
-    const cached = await getCachedResponse('chat', body.messages, model);
-    if (cached) {
-      res.setHeader('X-Cached', 'true');
-      res.json({ ...cached, cached: true });
-      return;
+    // Build system prompt with lightweight context (file tree only, no file contents)
+    let systemPrompt = body.systemPrompt || '';
+    const hasWorkspace = !!body.codebaseContext;
+
+    if (body.codebaseContext) {
+      const { rootName, fileTree, files } = body.codebaseContext;
+      let contextSection = `\nTu as accès au workspace de l'utilisateur "${rootName}".`;
+      contextSection += `\n\nArborescence des fichiers :\n${fileTree}`;
+
+      // Include active file content if provided (small, relevant)
+      if (files && files.length > 0) {
+        contextSection += '\n\nFichier(s) actuellement ouvert(s) :\n';
+        for (const file of files) {
+          contextSection += `--- ${file.path} (${file.language}) ---\n${file.content}\n--- fin ---\n\n`;
+        }
+      }
+
+      contextSection += '\nTu disposes d\'outils pour lire, créer, modifier et lister les fichiers de ce workspace. Utilise read_file pour examiner le code avant de répondre. Utilise write_file/edit_file pour créer ou modifier du code quand l\'utilisateur le demande.';
+
+      systemPrompt = systemPrompt
+        ? `${systemPrompt}\n\n${contextSection}`
+        : `Tu es Marcel'IA, un assistant IA de développement pour les développeurs ERANOVE/GS2E. Réponds toujours en français.\n${contextSection}`;
+    }
+
+    // Skip cache when tools are involved (tool results vary)
+    if (!hasWorkspace) {
+      const cached = await getCachedResponse('chat', body.messages, model, systemPrompt);
+      if (cached) {
+        res.setHeader('X-Cached', 'true');
+        res.json({ ...cached, cached: true });
+        return;
+      }
     }
 
     const startTime = Date.now();
 
-    // Build enriched system prompt with codebase context
-    let systemPrompt = body.systemPrompt || '';
-    if (body.codebaseContext) {
-      const { rootName, fileTree, files } = body.codebaseContext;
-      let codebaseSection = `\nYou have access to the user's workspace "${rootName}".\n\nFile tree:\n${fileTree}\n\nFile contents:\n`;
-      for (const file of files) {
-        codebaseSection += `--- ${file.path} (${file.language}) ---\n${file.content}\n--- end ---\n\n`;
-      }
-      codebaseSection += 'Answer questions about this codebase. Reference specific files and line numbers when relevant.';
-      systemPrompt = systemPrompt
-        ? `${systemPrompt}\n\n${codebaseSection}`
-        : `You are Marcel'IA, an AI coding assistant for ERANOVE/GS2E developers.\n${codebaseSection}`;
-    }
+    // Build messages — content can be string (text) or array (tool_use/tool_result blocks)
+    const messages: Array<{ role: string; content: any }> = body.messages.map(m => ({
+      role: m.role,
+      content: m.content,
+    }));
 
     const stream = await createStream({
       model,
-      messages: body.messages,
+      messages,
       maxTokens: body.maxTokens || DEFAULT_MAX_TOKENS,
-      systemPrompt: systemPrompt || body.systemPrompt,
+      systemPrompt: systemPrompt || undefined,
+      tools: hasWorkspace ? WORKSPACE_TOOLS : undefined,
     });
 
     const result = await forwardFoundryStream(stream, res, requestId);
@@ -63,14 +143,16 @@ chatRoutes.post('/', async (req: Request, res: Response) => {
       requestId,
     }).catch((err) => logger.error({ err }, 'Usage tracking failed'));
 
-    // Cache async
-    setCachedResponse('chat', body.messages, model, {
-      id: result.messageId,
-      content: result.content,
-      model,
-      usage: result.usage,
-      cached: false,
-    }).catch((err) => logger.error({ err }, 'Cache write failed'));
+    // Cache non-tool responses
+    if (!hasWorkspace) {
+      setCachedResponse('chat', body.messages, model, {
+        id: result.messageId,
+        content: result.content,
+        model,
+        usage: result.usage,
+        cached: false,
+      }, systemPrompt).catch((err) => logger.error({ err }, 'Cache write failed'));
+    }
   } catch (err) {
     logger.error({ err, requestId }, 'Chat request failed');
     if (!res.headersSent) {

@@ -1,20 +1,28 @@
 import * as vscode from 'vscode';
 import { ApiClient } from '../../services/api-client';
-import { parseSSEStream } from '../../services/streaming-client';
+import { parseSSEStream, ToolCallData } from '../../services/streaming-client';
 import { collectContext } from '../../services/context-collector';
 import { WorkspaceScanner } from '../../services/workspace-scanner';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
+  content: string | any[];  // string for text, array for content blocks (tool_use, tool_result)
+}
+
+interface PendingToolResult {
+  toolCallId: string;
   content: string;
+  isError?: boolean;
 }
 
 const SLASH_COMMANDS: Record<string, string> = {
-  '/test': 'Generate unit tests for this code:',
-  '/doc': 'Generate documentation for this code:',
-  '/review': 'Review this code for issues:',
-  '/explain': 'Explain this code in detail:',
+  '/test': 'Génère des tests unitaires pour ce code :',
+  '/doc': 'Génère la documentation pour ce code :',
+  '/review': 'Fais une revue de ce code et identifie les problèmes :',
+  '/explain': 'Explique ce code en détail :',
 };
+
+const MAX_TOOL_ROUNDS = 20;
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private webviewView?: vscode.WebviewView;
@@ -46,6 +54,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'clearHistory':
           this.history = [];
           break;
+        case 'toolApproval':
+          // Handled via promise resolution in tool execution
+          break;
       }
     });
   }
@@ -66,7 +77,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    // Add context info
+    // Collect current editor context
     const ctx = collectContext();
     let systemInfo = '';
     if (ctx.currentFile) {
@@ -75,63 +86,232 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.history.push({ role: 'user', content: processedText });
 
-    // Show user message in webview
+    // Show user message
     this.postToWebview({ type: 'userMessage', text });
-
-    // Show typing indicator
     this.postToWebview({ type: 'assistantStart' });
 
     try {
-      // Build workspace context if enabled
+      // Build lightweight workspace context: file tree + active file only
       const config = vscode.workspace.getConfiguration('marcelia');
       const workspaceEnabled = config.get<boolean>('workspaceContextEnabled', true);
       let codebaseContext: any = undefined;
 
       if (workspaceEnabled) {
-        const wsContext = await this.workspaceScanner.getContext();
-        if (wsContext) {
+        const treeCtx = await this.workspaceScanner.getFileTree();
+        if (treeCtx) {
+          const activeFiles: Array<{ path: string; language: string; content: string }> = [];
+
+          // Include active file content (small, relevant)
+          if (ctx.currentFile) {
+            const relPath = vscode.workspace.asRelativePath(ctx.currentFile, false);
+            const fileContent = await this.workspaceScanner.readFile(relPath);
+            if (fileContent) {
+              activeFiles.push({
+                path: fileContent.path,
+                language: fileContent.language,
+                content: fileContent.content,
+              });
+            }
+          }
+
           codebaseContext = {
-            rootName: wsContext.rootName,
-            fileTree: wsContext.fileTree,
-            files: wsContext.files.map(f => ({
-              path: f.path,
-              language: f.language,
-              content: f.content,
-            })),
+            rootName: treeCtx.rootName,
+            fileTree: treeCtx.fileTree,
+            files: activeFiles.length > 0 ? activeFiles : undefined,
           };
+
           this.postToWebview({
             type: 'workspaceInfo',
-            text: `Contexte workspace: ${wsContext.includedFiles}/${wsContext.totalFiles} fichiers`,
+            text: `Workspace: ${treeCtx.rootName} (${treeCtx.totalFiles} fichiers)`,
           });
         }
       }
 
-      const stream = await this.apiClient.postStream('/chat', {
-        messages: this.history,
-        systemPrompt: systemInfo
-          ? `You are Marcel'IA, an AI coding assistant for ERANOVE/GS2E developers. ${systemInfo}`
-          : "You are Marcel'IA, an AI coding assistant for ERANOVE/GS2E developers.",
-        codebaseContext,
-      });
+      const systemPrompt = systemInfo
+        ? `Tu es Marcel'IA, un assistant IA de développement pour les développeurs ERANOVE/GS2E. Réponds toujours en français. ${systemInfo}`
+        : "Tu es Marcel'IA, un assistant IA de développement pour les développeurs ERANOVE/GS2E. Réponds toujours en français.";
 
-      let fullResponse = '';
+      // Tool execution loop
+      await this.streamWithToolLoop(systemPrompt, codebaseContext);
 
-      await parseSSEStream(stream, {
-        onText: (text) => {
-          fullResponse += text;
-          this.postToWebview({ type: 'assistantDelta', text });
-        },
-        onDone: () => {
-          this.history.push({ role: 'assistant', content: fullResponse });
-          this.postToWebview({ type: 'assistantDone' });
-        },
-        onError: (error) => {
-          this.postToWebview({ type: 'error', text: error });
-        },
-      });
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Unknown error';
       this.postToWebview({ type: 'error', text: errMsg });
+    }
+  }
+
+  private async streamWithToolLoop(
+    systemPrompt: string,
+    codebaseContext: any,
+    round: number = 0,
+  ): Promise<void> {
+    if (round >= MAX_TOOL_ROUNDS) {
+      this.postToWebview({ type: 'assistantDelta', text: '\n\n[Limite de tours atteinte]' });
+      this.postToWebview({ type: 'assistantDone' });
+      return;
+    }
+
+    const requestBody: any = {
+      messages: this.history,
+      systemPrompt,
+      codebaseContext,
+    };
+
+    const stream = await this.apiClient.postStream('/chat', requestBody);
+
+    let fullResponse = '';
+    const pendingToolCalls: ToolCallData[] = [];
+    let stopReason = 'end_turn';
+
+    await parseSSEStream(stream, {
+      onText: (text) => {
+        fullResponse += text;
+        this.postToWebview({ type: 'assistantDelta', text });
+      },
+      onToolUse: (toolCall) => {
+        pendingToolCalls.push(toolCall);
+        this.postToWebview({
+          type: 'toolAction',
+          tool: toolCall.name,
+          path: toolCall.input.path || '',
+        });
+      },
+      onStopReason: (reason) => {
+        stopReason = reason;
+      },
+      onDone: () => {},
+      onError: (error) => {
+        this.postToWebview({ type: 'error', text: error });
+      },
+    });
+
+    // If Claude stopped because it wants to use tools
+    if (stopReason === 'tool_use' && pendingToolCalls.length > 0) {
+      // Build full assistant content with text + tool_use blocks (required by Anthropic API)
+      const assistantContent: any[] = [];
+      if (fullResponse) {
+        assistantContent.push({ type: 'text', text: fullResponse });
+      }
+      for (const tc of pendingToolCalls) {
+        assistantContent.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.input });
+      }
+      this.history.push({ role: 'assistant', content: assistantContent });
+
+      // Execute each tool call and build tool_result content blocks
+      const toolResultBlocks: any[] = [];
+      for (const toolCall of pendingToolCalls) {
+        const result = await this.executeTool(toolCall);
+        toolResultBlocks.push({
+          type: 'tool_result',
+          tool_use_id: result.toolCallId,
+          content: result.content,
+          is_error: result.isError || false,
+        });
+      }
+
+      // Push tool results as a user message (Anthropic API requires this after tool_use)
+      this.history.push({ role: 'user', content: toolResultBlocks });
+
+      // Continue the conversation — history now has the full context
+      await this.streamWithToolLoop(systemPrompt, codebaseContext, round + 1);
+    } else {
+      // Final response — done
+      this.history.push({ role: 'assistant', content: fullResponse });
+      this.postToWebview({ type: 'assistantDone' });
+    }
+  }
+
+  private async executeTool(toolCall: ToolCallData): Promise<PendingToolResult> {
+    const { id, name, input } = toolCall;
+    const config = vscode.workspace.getConfiguration('marcelia');
+    const confirmLevel = config.get<string>('toolConfirmation', 'write-only');
+
+    try {
+      switch (name) {
+        case 'read_file': {
+          const file = await this.workspaceScanner.readFile(input.path);
+          if (!file) {
+            return { toolCallId: id, content: `Error: file not found: ${input.path}`, isError: true };
+          }
+          this.postToWebview({ type: 'assistantDelta', text: `\n📖 Lu: ${input.path}\n` });
+          return { toolCallId: id, content: file.content };
+        }
+
+        case 'write_file': {
+          if (confirmLevel === 'always' || confirmLevel === 'write-only') {
+            const confirmed = await this.askConfirmation(`Créer/écrire: ${input.path}`);
+            if (!confirmed) {
+              return { toolCallId: id, content: 'User denied the file write operation.', isError: true };
+            }
+          }
+          const success = await this.workspaceScanner.writeFile(input.path, input.content);
+          if (!success) {
+            return { toolCallId: id, content: `Error: could not write file: ${input.path}`, isError: true };
+          }
+          this.postToWebview({ type: 'assistantDelta', text: `\n✅ Créé: ${input.path}\n` });
+          // Open the file in editor
+          await this.openFileInEditor(input.path);
+          return { toolCallId: id, content: `File written successfully: ${input.path}` };
+        }
+
+        case 'edit_file': {
+          if (confirmLevel === 'always' || confirmLevel === 'write-only') {
+            const confirmed = await this.askConfirmation(`Modifier: ${input.path}`);
+            if (!confirmed) {
+              return { toolCallId: id, content: 'User denied the file edit operation.', isError: true };
+            }
+          }
+          const success = await this.workspaceScanner.editFile(input.path, input.old_text, input.new_text);
+          if (!success) {
+            return { toolCallId: id, content: `Error: could not edit file (text not found): ${input.path}`, isError: true };
+          }
+          this.postToWebview({ type: 'assistantDelta', text: `\n✏️ Modifié: ${input.path}\n` });
+          await this.openFileInEditor(input.path);
+          return { toolCallId: id, content: `File edited successfully: ${input.path}` };
+        }
+
+        case 'create_directory': {
+          const success = await this.workspaceScanner.createDirectory(input.path);
+          if (!success) {
+            return { toolCallId: id, content: `Error: could not create directory: ${input.path}`, isError: true };
+          }
+          this.postToWebview({ type: 'assistantDelta', text: `\n📁 Dossier créé: ${input.path}\n` });
+          return { toolCallId: id, content: `Directory created: ${input.path}` };
+        }
+
+        case 'list_files': {
+          const files = await this.workspaceScanner.listFiles(input.path, input.pattern);
+          return { toolCallId: id, content: files.join('\n') || 'No files found.' };
+        }
+
+        default:
+          return { toolCallId: id, content: `Unknown tool: ${name}`, isError: true };
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Tool execution error';
+      return { toolCallId: id, content: `Error: ${msg}`, isError: true };
+    }
+  }
+
+  private async askConfirmation(action: string): Promise<boolean> {
+    const result = await vscode.window.showInformationMessage(
+      `Marcel'IA veut: ${action}`,
+      { modal: false },
+      'Autoriser',
+      'Refuser',
+    );
+    return result === 'Autoriser';
+  }
+
+  private async openFileInEditor(relativePath: string): Promise<void> {
+    const rootFolder = this.workspaceScanner.getRootFolder();
+    if (!rootFolder) return;
+    const uri = vscode.Uri.joinPath(rootFolder.uri, relativePath);
+    try {
+      const doc = await vscode.workspace.openTextDocument(uri);
+      await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
+    } catch {
+      // File may not exist yet or be binary
     }
   }
 
@@ -348,7 +528,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           isStreaming = true;
           sendBtn.disabled = true;
           currentAssistantEl = addMessage('assistant', '');
-          currentAssistantEl.querySelector('.content').innerHTML = '<span class="typing-indicator">En train de réfléchir...</span>';
+          currentAssistantEl.querySelector('.content').innerHTML = '<span class="typing-indicator">En train de r\\u00e9fl\\u00e9chir...</span>';
           break;
         case 'assistantDelta':
           if (currentAssistantEl) {
@@ -363,6 +543,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           isStreaming = false;
           sendBtn.disabled = false;
           currentAssistantEl = null;
+          break;
+        case 'toolAction':
+          if (currentAssistantEl) {
+            const content = currentAssistantEl.querySelector('.content');
+            const typing = content.querySelector('.typing-indicator');
+            if (typing) typing.remove();
+          }
+          chatContainer.scrollTop = chatContainer.scrollHeight;
           break;
         case 'error':
           isStreaming = false;

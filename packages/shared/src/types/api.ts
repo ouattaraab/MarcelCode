@@ -2,7 +2,19 @@ import { ModelId } from './models';
 
 export interface Message {
   role: 'user' | 'assistant';
+  content: string | any[];  // string for text, array for content blocks (tool_use, tool_result)
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  input: Record<string, any>;
+}
+
+export interface ToolResult {
+  toolCallId: string;
   content: string;
+  isError?: boolean;
 }
 
 export interface ChatRequest {
@@ -14,12 +26,13 @@ export interface ChatRequest {
   codebaseContext?: {
     rootName: string;
     fileTree: string;
-    files: Array<{
+    files?: Array<{
       path: string;
       language: string;
       content: string;
     }>;
   };
+  toolResults?: ToolResult[];
 }
 
 export interface CompletionRequest {

@@ -16,17 +16,17 @@ reviewRoutes.post('/', async (req: Request, res: Response) => {
     const model = routeRequest('review', undefined, user);
     const startTime = Date.now();
 
-    const prompt = `Review the following ${body.language} code from file "${body.filePath}":
-${body.context ? `\nContext: ${body.context}` : ''}
-${body.reviewType ? `\nFocus on: ${body.reviewType}` : ''}
+    const prompt = `Fais une revue du code ${body.language} suivant, issu du fichier "${body.filePath}" :
+${body.context ? `\nContexte : ${body.context}` : ''}
+${body.reviewType ? `\nAxe d'analyse : ${body.reviewType}` : ''}
 
 \`\`\`${body.language}
 ${body.code}
 \`\`\`
 
-Respond with a JSON object containing:
-- "review": a markdown summary of the review
-- "issues": an array of objects with { "severity": "info"|"warning"|"error"|"critical", "line": number|null, "message": string, "suggestion": string|null }`;
+Réponds en français avec un objet JSON contenant :
+- "review" : un résumé de la revue en markdown
+- "issues" : un tableau d'objets avec { "severity": "info"|"warning"|"error"|"critical", "line": number|null, "message": string, "suggestion": string|null }`;
 
     const response = await createMessage({
       model,

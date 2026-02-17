@@ -1,5 +1,13 @@
+export interface ToolCallData {
+  id: string;
+  name: string;
+  input: any;
+}
+
 export interface StreamCallbacks {
   onText: (text: string) => void;
+  onToolUse: (toolCall: ToolCallData) => void;
+  onStopReason: (reason: string) => void;
   onDone: () => void;
   onError: (error: string) => void;
 }
@@ -11,6 +19,11 @@ export async function parseSSEStream(
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+
+  // Track tool_use blocks being built
+  let currentToolId = '';
+  let currentToolName = '';
+  let jsonAccumulator = '';
 
   try {
     while (true) {
@@ -28,7 +41,6 @@ export async function parseSSEStream(
         }
 
         if (line.startsWith('event: error')) {
-          // Next data line has the error
           continue;
         }
 
@@ -42,12 +54,47 @@ export async function parseSSEStream(
           try {
             const parsed = JSON.parse(data);
 
-            // Handle content_block_delta events
+            // Text content
             if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'text_delta') {
               callbacks.onText(parsed.delta.text);
             }
 
-            // Handle error events
+            // Tool use block start — capture id and name
+            if (parsed.type === 'content_block_start' && parsed.content_block?.type === 'tool_use') {
+              currentToolId = parsed.content_block.id;
+              currentToolName = parsed.content_block.name;
+              jsonAccumulator = '';
+            }
+
+            // Tool use JSON input streaming
+            if (parsed.type === 'content_block_delta' && parsed.delta?.type === 'input_json_delta') {
+              jsonAccumulator += parsed.delta.partial_json;
+            }
+
+            // Tool use block done — emit the complete tool call
+            if (parsed.type === 'content_block_stop' && currentToolId) {
+              let toolInput = {};
+              try {
+                toolInput = JSON.parse(jsonAccumulator);
+              } catch {
+                toolInput = { raw: jsonAccumulator };
+              }
+              callbacks.onToolUse({
+                id: currentToolId,
+                name: currentToolName,
+                input: toolInput,
+              });
+              currentToolId = '';
+              currentToolName = '';
+              jsonAccumulator = '';
+            }
+
+            // Stop reason (end_turn or tool_use)
+            if (parsed.type === 'message_delta' && parsed.delta?.stop_reason) {
+              callbacks.onStopReason(parsed.delta.stop_reason);
+            }
+
+            // Error events
             if (parsed.error) {
               callbacks.onError(parsed.error);
               return;

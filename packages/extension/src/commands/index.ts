@@ -37,7 +37,7 @@ export function registerCommands(
       }
 
       await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: "Marcel'IA: Analyse du code..." },
+        { location: vscode.ProgressLocation.Notification, title: "Marcel'IA: Revue du code en cours..." },
         async () => {
           try {
             const result = await apiClient.post<{ review: string; issues: any[] }>('/review', {
@@ -48,7 +48,7 @@ export function registerCommands(
             });
 
             const doc = await vscode.workspace.openTextDocument({
-              content: `# Code Review - ${codeInfo.filePath}\n\n${result.review}`,
+              content: `# Revue de Code - ${codeInfo.filePath}\n\n${result.review}`,
               language: 'markdown',
             });
             await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside });
