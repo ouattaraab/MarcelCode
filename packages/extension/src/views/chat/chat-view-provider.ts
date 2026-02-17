@@ -283,10 +283,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const wasStreamed = this.streamedToolPaths.has(id);
           this.streamedToolPaths.delete(id);
 
+          // Ensure any streaming session is finalized before proceeding
+          await this.streamingEditor.finalize();
+
           if (confirmLevel === 'always' || confirmLevel === 'write-only') {
             const confirmed = await this.requestInlineConfirmation(id, `Créer/écrire: ${input.path}`);
             if (!confirmed) {
-              // Revert the streamed file
               if (wasStreamed && rootFolder) {
                 await this.streamingEditor.revert(rootFolder, input.path);
               }
@@ -295,18 +297,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
           }
 
-          // If already streamed to editor, just verify it's saved
-          if (wasStreamed) {
-            this.postToWebview({ type: 'toolStatus', toolId: id, status: 'done', label: `Créé: ${input.path}` });
-            return { toolCallId: id, content: `File written successfully: ${input.path}` };
-          }
-
-          // Fallback: streaming didn't happen, write normally
+          // Always write the full content to ensure the file is complete,
+          // even if streaming partially succeeded
           const success = await this.workspaceScanner.writeFile(input.path, input.content);
           if (!success) {
             return { toolCallId: id, content: `Error: could not write file: ${input.path}`, isError: true };
           }
-          await this.openFileInEditor(input.path);
+
+          // If not already open in editor (streaming opened it), open now
+          if (!wasStreamed) {
+            await this.openFileInEditor(input.path);
+          }
+
           this.postToWebview({ type: 'toolStatus', toolId: id, status: 'done', label: `Créé: ${input.path}` });
           return { toolCallId: id, content: `File written successfully: ${input.path}` };
         }

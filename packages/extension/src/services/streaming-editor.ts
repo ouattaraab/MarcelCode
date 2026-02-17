@@ -3,6 +3,9 @@ import * as vscode from 'vscode';
 /**
  * Manages progressive writing of content into a VS Code editor document.
  * Opens a file, appends content as it streams, and saves when done.
+ *
+ * Content chunks can arrive BEFORE the editor is open (due to async timing).
+ * They are buffered internally and flushed once the editor is ready.
  */
 export class StreamingEditorManager {
   private activeDoc: vscode.TextDocument | null = null;
@@ -11,16 +14,18 @@ export class StreamingEditorManager {
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private isFlushing = false;
   private activePath = '';
+  private editorReady = false;
 
   /**
    * Create/open a file and prepare for progressive content writing.
-   * The file is opened in a column beside the chat panel.
+   * Any content chunks received before this completes are buffered and flushed.
    */
   async openForStreaming(rootFolder: vscode.WorkspaceFolder, relativePath: string): Promise<boolean> {
     // Finalize any previous streaming session
     await this.finalize();
 
     this.activePath = relativePath;
+    this.editorReady = false;
     const uri = vscode.Uri.joinPath(rootFolder.uri, relativePath);
 
     try {
@@ -42,24 +47,31 @@ export class StreamingEditorManager {
         viewColumn: vscode.ViewColumn.Beside,
       });
 
-      this.pendingContent = '';
+      this.editorReady = true;
+
+      // Flush any content that arrived while the editor was opening
+      if (this.pendingContent) {
+        await this.flush();
+      }
+
       return true;
     } catch {
       this.activeDoc = null;
       this.activeEditor = null;
+      this.editorReady = false;
       return false;
     }
   }
 
   /**
-   * Append a chunk of content to the open document.
-   * Writes are throttled (batched every 30ms) to avoid overwhelming the editor.
+   * Append a chunk of content. Always buffers, even if editor isn't open yet.
+   * Content is flushed to the editor in batches every 30ms once the editor is ready.
    */
   appendContent(chunk: string): void {
-    if (!this.activeDoc) return;
     this.pendingContent += chunk;
 
-    if (!this.flushTimer) {
+    // Only schedule flush if editor is ready
+    if (this.editorReady && !this.flushTimer) {
       this.flushTimer = setTimeout(() => {
         this.flushTimer = null;
         this.flush();
@@ -96,8 +108,8 @@ export class StreamingEditorManager {
     this.isFlushing = false;
 
     // If more content arrived while flushing, flush again
-    if (this.pendingContent) {
-      this.flush();
+    if (this.pendingContent && this.editorReady) {
+      await this.flush();
     }
   }
 
@@ -105,12 +117,21 @@ export class StreamingEditorManager {
    * Finalize the current file: flush remaining content and save.
    */
   async finalize(): Promise<void> {
-    if (!this.activeDoc) return;
-
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
+
+    // If editor isn't ready yet but we have content, we can't flush to editor.
+    // Write directly to disk as fallback.
+    if (!this.activeDoc && this.pendingContent && this.activePath) {
+      // Content arrived but editor never opened — handled by executeTool fallback
+      this.pendingContent = '';
+      this.activePath = '';
+      return;
+    }
+
+    if (!this.activeDoc) return;
 
     // Flush remaining content
     if (this.pendingContent) {
@@ -129,6 +150,7 @@ export class StreamingEditorManager {
     this.activeDoc = null;
     this.activeEditor = null;
     this.activePath = '';
+    this.editorReady = false;
   }
 
   /**
@@ -144,6 +166,7 @@ export class StreamingEditorManager {
     this.activeDoc = null;
     this.activeEditor = null;
     this.activePath = '';
+    this.editorReady = false;
 
     try {
       const uri = vscode.Uri.joinPath(rootFolder.uri, relativePath);
@@ -155,7 +178,7 @@ export class StreamingEditorManager {
 
   /** Whether a streaming session is currently active */
   get isActive(): boolean {
-    return this.activeDoc !== null;
+    return this.activePath !== '';
   }
 
   get currentPath(): string {
