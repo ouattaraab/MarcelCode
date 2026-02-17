@@ -1,16 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { env, logger } from '../config';
-import { ModelId, Message } from '@marcelia/shared';
+import { ModelId } from '@marcelia/shared';
 
 let client: Anthropic;
 
 function getClient(): Anthropic {
   if (!client) {
     client = new Anthropic({
-      baseURL: env.AZURE_FOUNDRY_ENDPOINT,
-      apiKey: env.AZURE_FOUNDRY_API_KEY || '',
+      apiKey: env.ANTHROPIC_API_KEY,
     });
-    logger.info('Azure AI Foundry client initialized');
+    logger.info('Anthropic client initialized (direct API)');
   }
   return client;
 }

@@ -8,9 +8,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 
-  AZURE_FOUNDRY_ENDPOINT: z.string().url().default('https://placeholder.services.ai.azure.com'),
-  AZURE_FOUNDRY_API_KEY: z.string().optional(),
-  AZURE_USE_MANAGED_IDENTITY: z.coerce.boolean().default(false),
+  ANTHROPIC_API_KEY: z.string(),
 
   AZURE_TENANT_ID: z.string().default('00000000-0000-0000-0000-000000000000'),
   AZURE_CLIENT_ID: z.string().default('00000000-0000-0000-0000-000000000000'),

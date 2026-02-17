@@ -14,6 +14,24 @@ function getJwks() {
 }
 
 export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  // Dev-mode bypass: use seeded admin user when no token is provided
+  if (env.NODE_ENV === 'development' && !req.headers.authorization) {
+    const prisma = getPrisma();
+    const devUser = await prisma.user.findFirst({ where: { role: 'admin' } });
+    if (devUser) {
+      (req as any).user = {
+        id: devUser.id,
+        email: devUser.email,
+        displayName: devUser.displayName,
+        role: devUser.role as UserRole,
+        teamId: devUser.teamId,
+        entraObjectId: devUser.entraObjectId,
+      } satisfies AuthenticatedUser;
+      logger.debug({ userId: devUser.id }, 'Dev-mode auth bypass');
+      return next();
+    }
+  }
+
   const authHeader = req.headers.authorization;
 
   if (!authHeader?.startsWith('Bearer ')) {

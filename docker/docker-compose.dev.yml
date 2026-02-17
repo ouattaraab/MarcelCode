@@ -15,8 +15,7 @@ services:
       - LOG_LEVEL=debug
       - DATABASE_URL=postgresql://marcelia:marcelia_dev@postgres:5432/marcelia?schema=public
       - REDIS_URL=redis://redis:6379
-      - AZURE_FOUNDRY_ENDPOINT=${AZURE_FOUNDRY_ENDPOINT}
-      - AZURE_FOUNDRY_API_KEY=${AZURE_FOUNDRY_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
       - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
       - AZURE_AUDIENCE=${AZURE_AUDIENCE:-api://marcelia}
@@ -49,7 +48,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
