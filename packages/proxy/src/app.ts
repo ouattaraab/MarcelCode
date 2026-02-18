@@ -12,6 +12,7 @@ import { rateLimiter } from './middleware/rate-limiter';
 import { quotaGuard } from './middleware/quota-guard';
 import { piiScanner } from './middleware/pii-scanner';
 import { errorHandler } from './middleware/error-handler';
+import { pluginRegistry } from './plugin';
 
 export function createApp() {
   const app = express();
@@ -31,9 +32,15 @@ export function createApp() {
   apiRouter.use(quotaGuard);
   apiRouter.use(piiScanner);
 
+  // Plugin middleware (after security pipeline)
+  pluginRegistry.applyMiddleware(apiRouter);
+
   apiRouter.use('/chat', chatRoutes);
   apiRouter.use('/completion', completionRoutes);
   apiRouter.use('/review', reviewRoutes);
+
+  // Plugin routes (after built-in routes)
+  pluginRegistry.applyRoutes(apiRouter);
 
   app.use('/api/v1', apiRouter);
 

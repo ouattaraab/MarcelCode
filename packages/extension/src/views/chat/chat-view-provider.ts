@@ -5,6 +5,8 @@ import { collectContext } from '../../services/context-collector';
 import { WorkspaceScanner } from '../../services/workspace-scanner';
 import { JsonContentExtractor } from '../../services/json-content-extractor';
 import { StreamingEditorManager } from '../../services/streaming-editor';
+import { AuthProvider } from '../../auth/auth-provider';
+import { PluginRegistry } from '../../plugin';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -16,13 +18,6 @@ interface PendingToolResult {
   content: string;
   isError?: boolean;
 }
-
-const SLASH_COMMANDS: Record<string, string> = {
-  '/test': 'Génère des tests unitaires pour ce code :',
-  '/doc': 'Génère la documentation pour ce code :',
-  '/review': 'Fais une revue de ce code et identifie les problèmes :',
-  '/explain': 'Explique ce code en détail :',
-};
 
 const MAX_TOOL_ROUNDS = 20;
 
@@ -38,9 +33,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly apiClient: ApiClient,
+    private readonly authProvider: AuthProvider,
+    private readonly pluginRegistry: PluginRegistry,
   ) {
     this.workspaceScanner = new WorkspaceScanner();
     this.streamingEditor = new StreamingEditorManager();
+
+    // Listen for auth state changes to show/hide login screen
+    this.authProvider.onDidChange(() => {
+      const isDevMode = vscode.workspace.getConfiguration('marcelia').get('devMode', false);
+      if (isDevMode) return;
+      if (this.authProvider.isSignedIn()) {
+        this.postToWebview({ type: 'hideLoginScreen' });
+      } else {
+        this.postToWebview({ type: 'showLoginScreen' });
+      }
+    });
+
+    // Register built-in slash commands
+    this.pluginRegistry.slashCommands.register({
+      trigger: '/test',
+      description: 'Génère des tests unitaires pour ce code',
+      handler: (args) => `Génère des tests unitaires pour ce code :\n${args}`,
+    });
+    this.pluginRegistry.slashCommands.register({
+      trigger: '/doc',
+      description: 'Génère la documentation pour ce code',
+      handler: (args) => `Génère la documentation pour ce code :\n${args}`,
+    });
+    this.pluginRegistry.slashCommands.register({
+      trigger: '/review',
+      description: 'Fais une revue de ce code',
+      handler: (args) => `Fais une revue de ce code et identifie les problèmes :\n${args}`,
+    });
+    this.pluginRegistry.slashCommands.register({
+      trigger: '/explain',
+      description: 'Explique ce code en détail',
+      handler: (args) => `Explique ce code en détail :\n${args}`,
+    });
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView) {
@@ -52,6 +82,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     };
 
     webviewView.webview.html = this.getHtml(webviewView.webview);
+
+    // Proactively check auth on webview init (non-blocking)
+    const isDevMode = vscode.workspace.getConfiguration('marcelia').get('devMode', false);
+    if (!isDevMode) {
+      this.authProvider.ensureAuthenticated().then((authenticated) => {
+        if (!authenticated) {
+          this.postToWebview({ type: 'showLoginScreen' });
+        }
+      }).catch(() => {});
+    }
 
     webviewView.webview.onDidReceiveMessage(async (message) => {
       switch (message.type) {
@@ -69,6 +109,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           }
           break;
         }
+        case 'signIn': {
+          const session = await this.authProvider.signIn();
+          if (session) {
+            this.postToWebview({ type: 'hideLoginScreen' });
+          }
+          break;
+        }
       }
     });
   }
@@ -80,12 +127,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleUserMessage(text: string) {
+    // Check auth gate (skip in dev mode)
+    const devMode = vscode.workspace.getConfiguration('marcelia').get('devMode', false);
+    if (!devMode && !this.authProvider.isSignedIn()) {
+      this.postToWebview({ type: 'showLoginScreen' });
+      return;
+    }
+
+    // Slash command dispatch via registry
     let processedText = text;
-    for (const [cmd, prompt] of Object.entries(SLASH_COMMANDS)) {
-      if (text.startsWith(cmd)) {
-        processedText = `${prompt}\n${text.slice(cmd.length).trim()}`;
-        break;
+    const slashMatch = text.match(/^(\/\S+)\s*(.*)/s);
+    if (slashMatch) {
+      const result = this.pluginRegistry.slashCommands.execute(slashMatch[1], slashMatch[2]);
+      if (result !== null) {
+        processedText = result;
       }
+    }
+
+    // Message preprocessing via plugin pipeline
+    try {
+      processedText = this.pluginRegistry.messagePipeline.preprocess(processedText);
+    } catch {
+      // Plugin preprocessor error — continue with original text
     }
 
     const ctx = collectContext();
@@ -134,15 +197,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
       }
 
-      const systemPrompt = systemInfo
+      let systemPrompt = systemInfo
         ? `Tu es Marcel'IA, un assistant IA de développement pour les développeurs ERANOVE/GS2E. Réponds toujours en français. ${systemInfo}`
         : "Tu es Marcel'IA, un assistant IA de développement pour les développeurs ERANOVE/GS2E. Réponds toujours en français.";
+
+      // Apply plugin prompt transformers
+      try {
+        systemPrompt = this.pluginRegistry.promptTransformers.transform(systemPrompt, {
+          codebaseContext: codebaseContext ? {
+            rootName: codebaseContext.rootName,
+            fileTree: codebaseContext.fileTree,
+          } : undefined,
+          conversationLength: this.history.length,
+        });
+      } catch {
+        // Plugin transformer error — continue with original prompt
+      }
 
       await this.streamWithToolLoop(systemPrompt, codebaseContext);
 
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'Unknown error';
-      this.postToWebview({ type: 'error', text: errMsg });
+      // Detect 401/auth errors and redirect to login screen
+      if (errMsg.includes('401') || errMsg.includes('Authentification requise')) {
+        this.postToWebview({ type: 'showLoginScreen' });
+        this.postToWebview({ type: 'error', text: 'Session expirée. Veuillez vous reconnecter.' });
+      } else {
+        this.postToWebview({ type: 'error', text: errMsg });
+      }
     }
   }
 
@@ -157,10 +239,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    const pluginToolSchemas = this.pluginRegistry.tools.getSchemas();
     const requestBody: any = {
       messages: this.history,
       systemPrompt,
       codebaseContext,
+      ...(pluginToolSchemas.length > 0 ? { pluginTools: pluginToolSchemas } : {}),
     };
 
     const stream = await this.apiClient.postStream('/chat', requestBody);
@@ -251,7 +335,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.history.push({ role: 'user', content: toolResultBlocks });
       await this.streamWithToolLoop(systemPrompt, codebaseContext, round + 1);
     } else {
-      this.history.push({ role: 'assistant', content: fullResponse });
+      let processedResponse = fullResponse;
+      try {
+        processedResponse = this.pluginRegistry.messagePipeline.postprocess(fullResponse);
+      } catch {
+        // Plugin postprocessor error — use original response
+      }
+      this.history.push({ role: 'assistant', content: processedResponse });
       this.postToWebview({ type: 'assistantDone' });
     }
   }
@@ -345,8 +435,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           return { toolCallId: id, content: files.join('\n') || 'No files found.' };
         }
 
-        default:
+        default: {
+          // Check plugin tools registry
+          if (this.pluginRegistry.tools.has(name)) {
+            const result = await this.pluginRegistry.tools.execute(name, input);
+            this.postToWebview({ type: 'toolStatus', toolId: id, status: 'done', label: `Plugin: ${name}` });
+            return { toolCallId: id, content: result.content, isError: result.isError };
+          }
           return { toolCallId: id, content: `Unknown tool: ${name}`, isError: true };
+        }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Tool execution error';
@@ -608,17 +705,60 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-button-secondaryBackground, #333);
       color: var(--vscode-button-secondaryForeground, #fff);
     }
+    #login-screen {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      padding: 24px;
+      text-align: center;
+      gap: 16px;
+    }
+    #login-screen.visible {
+      display: flex;
+    }
+    #login-screen h2 {
+      font-size: 1.2em;
+      font-weight: 600;
+    }
+    #login-screen p {
+      color: var(--vscode-descriptionForeground);
+      max-width: 280px;
+      line-height: 1.4;
+    }
+    #login-screen button {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: 4px;
+      padding: 10px 24px;
+      cursor: pointer;
+      font-size: 1em;
+    }
+    #login-screen button:hover {
+      background: var(--vscode-button-hoverBackground);
+    }
+    .app-content { display: flex; flex-direction: column; height: 100vh; }
+    .app-content.hidden { display: none; }
   </style>
 </head>
 <body>
-  <div class="toolbar">
-    <button id="clear-btn" title="Effacer l'historique">Effacer</button>
+  <div id="login-screen">
+    <h2>Connexion requise</h2>
+    <p>Connectez-vous avec votre compte ERANOVE pour acc\u00e9der \u00e0 Marcel'IA</p>
+    <button id="login-btn">Se connecter</button>
   </div>
-  <div id="workspace-info"></div>
-  <div id="chat-container"></div>
-  <div id="input-container">
-    <textarea id="message-input" placeholder="Posez une question... (/test, /doc, /review, /explain)" rows="1"></textarea>
-    <button id="send-btn">Envoyer</button>
+  <div class="app-content" id="app-content">
+    <div class="toolbar">
+      <button id="clear-btn" title="Effacer l'historique">Effacer</button>
+    </div>
+    <div id="workspace-info"></div>
+    <div id="chat-container"></div>
+    <div id="input-container">
+      <textarea id="message-input" placeholder="Posez une question... (/test, /doc, /review, /explain)" rows="1"></textarea>
+      <button id="send-btn">Envoyer</button>
+    </div>
   </div>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -626,8 +766,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const messageInput = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
     const clearBtn = document.getElementById('clear-btn');
+    const loginScreen = document.getElementById('login-screen');
+    const appContent = document.getElementById('app-content');
+    const loginBtn = document.getElementById('login-btn');
     let currentAssistantEl = null;
     let isStreaming = false;
+
+    loginBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'signIn' });
+    });
 
     const TOOL_ICONS = {
       'write_file': '\\u{1F4DD}',
@@ -839,6 +986,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           messageInput.value = msg.text;
           messageInput.style.height = 'auto';
           messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
+          break;
+        case 'showLoginScreen':
+          loginScreen.classList.add('visible');
+          appContent.classList.add('hidden');
+          break;
+        case 'hideLoginScreen':
+          loginScreen.classList.remove('visible');
+          appContent.classList.remove('hidden');
           break;
       }
     });

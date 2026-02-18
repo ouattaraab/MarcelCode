@@ -1,4 +1,5 @@
 import { ModelId } from './models';
+import { MarceliaToolSchema } from './plugin';
 
 export interface Message {
   role: 'user' | 'assistant';
@@ -33,6 +34,7 @@ export interface ChatRequest {
     }>;
   };
   toolResults?: ToolResult[];
+  pluginTools?: MarceliaToolSchema[];
 }
 
 export interface CompletionRequest {

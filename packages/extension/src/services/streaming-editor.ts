@@ -58,6 +58,7 @@ export class StreamingEditorManager {
     } catch {
       this.activeDoc = null;
       this.activeEditor = null;
+      this.activePath = '';
       this.editorReady = false;
       return false;
     }

@@ -15,7 +15,8 @@ function getJwks() {
 
 export async function authMiddleware(req: Request, res: Response, next: NextFunction) {
   // Dev-mode bypass: use seeded admin user when no token is provided
-  if (env.NODE_ENV === 'development' && !req.headers.authorization) {
+  // REQUIRE_AUTH=true forces auth even in dev mode
+  if (env.NODE_ENV === 'development' && !env.REQUIRE_AUTH && !req.headers.authorization) {
     const prisma = getPrisma();
     const devUser = await prisma.user.findFirst({ where: { role: 'admin' } });
     if (devUser) {

@@ -6,6 +6,7 @@ import { routeRequest } from '../services/router.service';
 import { getCachedResponse, setCachedResponse } from '../services/cache.service';
 import { trackUsage } from '../services/usage.service';
 import { logger } from '../config';
+import { pluginRegistry } from '../plugin';
 
 const WORKSPACE_TOOLS = [
   {
@@ -102,6 +103,11 @@ chatRoutes.post('/', async (req: Request, res: Response) => {
         : `Tu es Marcel'IA, un assistant IA de développement pour les développeurs ERANOVE/GS2E. Réponds toujours en français.\n${contextSection}`;
     }
 
+    // Apply plugin prompt extensions
+    for (const ext of pluginRegistry.getPromptExtensions()) {
+      systemPrompt += '\n' + ext;
+    }
+
     // Skip cache when tools are involved (tool results vary)
     if (!hasWorkspace) {
       const cached = await getCachedResponse('chat', body.messages, model, systemPrompt);
@@ -125,7 +131,17 @@ chatRoutes.post('/', async (req: Request, res: Response) => {
       messages,
       maxTokens: body.maxTokens || DEFAULT_MAX_TOKENS,
       systemPrompt: systemPrompt || undefined,
-      tools: hasWorkspace ? WORKSPACE_TOOLS : undefined,
+      tools: (() => {
+        const proxyPluginTools = pluginRegistry.getTools();
+        const clientPluginTools = (body.pluginTools || []).filter(
+          (t: any) => t && typeof t.name === 'string' && typeof t.description === 'string' && t.input_schema
+        );
+        const allPluginTools = [...proxyPluginTools, ...clientPluginTools];
+        if (hasWorkspace) {
+          return [...WORKSPACE_TOOLS, ...allPluginTools];
+        }
+        return allPluginTools.length > 0 ? allPluginTools : undefined;
+      })(),
     });
 
     const result = await forwardFoundryStream(stream, res, requestId);

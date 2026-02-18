@@ -3,6 +3,7 @@ import { AuthProvider } from '../auth/auth-provider';
 
 export class ApiClient {
   private baseUrl: string;
+  private headerMiddleware: Array<(headers: Record<string, string>) => Promise<Record<string, string>>> = [];
 
   constructor(private readonly authProvider: AuthProvider) {
     this.baseUrl = vscode.workspace.getConfiguration('marcelia').get('proxyUrl', 'http://localhost:3000');
@@ -14,20 +15,38 @@ export class ApiClient {
     });
   }
 
+  addHeaderMiddleware(fn: (headers: Record<string, string>) => Promise<Record<string, string>>): void {
+    this.headerMiddleware.push(fn);
+  }
+
   private async getHeaders(): Promise<Record<string, string>> {
     const devMode = vscode.workspace.getConfiguration('marcelia').get('devMode', false);
+    let headers: Record<string, string>;
+
     if (devMode) {
-      return { 'Content-Type': 'application/json' };
+      headers = { 'Content-Type': 'application/json' };
+    } else {
+      const token = await this.authProvider.getAccessToken();
+      if (!token) {
+        throw new Error('Authentification requise. Veuillez vous connecter avec votre compte ERANOVE.');
+      }
+      headers = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      };
     }
 
-    const token = await this.authProvider.getAccessToken();
-    if (!token) {
-      throw new Error('Not authenticated. Please sign in first.');
+    // Apply header middleware from plugins (protect critical headers)
+    const protectedContentType = headers['Content-Type'];
+    const protectedAuth = headers['Authorization'];
+    for (const middleware of this.headerMiddleware) {
+      headers = await middleware(headers);
     }
-    return {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    };
+    headers['Content-Type'] = protectedContentType;
+    if (protectedAuth) {
+      headers['Authorization'] = protectedAuth;
+    }
+    return headers;
   }
 
   async post<T>(path: string, body: unknown): Promise<T> {

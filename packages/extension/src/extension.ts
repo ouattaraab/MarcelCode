@@ -5,17 +5,20 @@ import { ChatViewProvider } from './views/chat/chat-view-provider';
 import { MarceliaCompletionProvider } from './providers/completion-provider';
 import { MarceliaCodeActionProvider } from './providers/code-action-provider';
 import { registerCommands } from './commands';
+import { PluginRegistry, MarceliaPluginAPI } from './plugin';
 
 let authProvider: AuthProvider;
 let apiClient: ApiClient;
+let pluginRegistry: PluginRegistry;
 
-export function activate(context: vscode.ExtensionContext) {
+export function activate(context: vscode.ExtensionContext): MarceliaPluginAPI {
   // Initialize auth & API client
   authProvider = new AuthProvider();
   apiClient = new ApiClient(authProvider);
+  pluginRegistry = new PluginRegistry();
 
   // Register chat webview
-  const chatViewProvider = new ChatViewProvider(context.extensionUri, apiClient);
+  const chatViewProvider = new ChatViewProvider(context.extensionUri, apiClient, authProvider, pluginRegistry);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider('marcelia.chatView', chatViewProvider),
   );
@@ -71,8 +74,13 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(statusBar);
 
   console.log("Marcel'IA extension activated");
+
+  return pluginRegistry.getPublicAPI();
 }
 
 export function deactivate() {
+  if (pluginRegistry) {
+    pluginRegistry.dispose();
+  }
   console.log("Marcel'IA extension deactivated");
 }

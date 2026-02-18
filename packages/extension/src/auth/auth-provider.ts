@@ -46,6 +46,19 @@ export class AuthProvider {
     }
   }
 
+  async ensureAuthenticated(): Promise<boolean> {
+    // Try silent auth first
+    const existing = await this.getSession();
+    if (existing) {
+      return true;
+    }
+
+    // Try interactive login
+    console.log("Marcel'IA: session non restaurée, tentative de connexion interactive");
+    const session = await this.signIn();
+    return session !== undefined;
+  }
+
   async getAccessToken(): Promise<string | undefined> {
     const session = await this.getSession();
     return session?.accessToken;
