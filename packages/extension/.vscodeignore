@@ -1,0 +1,13 @@
+src/**
+**/*.test.ts
+**/__mocks__/**
+.vscode/**
+vitest.config.ts
+tsconfig.json
+webpack.config.js
+node_modules/**
+*.vsix
+.gitignore
+.env
+.env.*
+../**

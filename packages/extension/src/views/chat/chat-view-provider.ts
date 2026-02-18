@@ -852,6 +852,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     let currentAssistantEl = null;
     let isStreaming = false;
     let fullAssistantText = '';
+    let renderPending = false;
 
     loginBtn.addEventListener('click', () => {
       vscode.postMessage({ type: 'signIn' });
@@ -919,7 +920,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     function processInlineMarkdown(text) {
       const lines = text.split('\\n');
       let html = '';
-      let inList = false;
+      let listTag = '';
 
       for (const line of lines) {
         const h3 = line.match(/^### (.+)/);
@@ -928,9 +929,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const li = line.match(/^[-*] (.+)/);
         const oli = line.match(/^\\d+\\. (.+)/);
 
-        if (inList && !li && !oli) {
-          html += '</ul>';
-          inList = false;
+        if (listTag && !li && !oli) {
+          html += '</' + listTag + '>';
+          listTag = '';
         }
 
         if (h3) {
@@ -939,16 +940,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           html += '<h2>' + inlineFormat(escapeHtml(h2[1])) + '</h2>';
         } else if (h1) {
           html += '<h1>' + inlineFormat(escapeHtml(h1[1])) + '</h1>';
-        } else if (li || oli) {
-          if (!inList) { html += '<ul>'; inList = true; }
-          html += '<li>' + inlineFormat(escapeHtml((li || oli)[1])) + '</li>';
+        } else if (li) {
+          if (!listTag) { html += '<ul>'; listTag = 'ul'; }
+          html += '<li>' + inlineFormat(escapeHtml(li[1])) + '</li>';
+        } else if (oli) {
+          if (!listTag) { html += '<ol>'; listTag = 'ol'; }
+          html += '<li>' + inlineFormat(escapeHtml(oli[1])) + '</li>';
         } else if (line.trim() === '') {
           html += '<br>';
         } else {
           html += inlineFormat(escapeHtml(line)) + '<br>';
         }
       }
-      if (inList) html += '</ul>';
+      if (listTag) html += '</' + listTag + '>';
       return html;
     }
 
@@ -1010,7 +1014,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       card.dataset.tool = toolName;
 
       const icon = TOOL_ICONS[toolName] || '\\u{1F527}';
-      const label = TOOL_LABELS[toolName] || toolName;
+      const label = TOOL_LABELS[toolName] || escapeHtml(toolName);
 
       card.innerHTML =
         '<div class="tool-header"><span>' + icon + '</span><span>' + label + '</span></div>' +
@@ -1063,16 +1067,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'assistantDelta':
           if (currentAssistantEl) {
             fullAssistantText += msg.text;
-            const content = currentAssistantEl.querySelector('.content');
-            const typing = content.querySelector('.typing-indicator');
+            // Remove typing indicator on first delta
+            const firstContent = currentAssistantEl.querySelector('.content');
+            const typing = firstContent.querySelector('.typing-indicator');
             if (typing) typing.remove();
-            const toolCards = Array.from(content.querySelectorAll('.tool-card, .tool-group'));
-            content.innerHTML = renderMarkdown(fullAssistantText);
-            for (const card of toolCards) {
-              content.appendChild(card);
+            // Throttle re-renders via requestAnimationFrame
+            if (!renderPending) {
+              renderPending = true;
+              requestAnimationFrame(() => {
+                renderPending = false;
+                if (!currentAssistantEl) return;
+                const content = currentAssistantEl.querySelector('.content');
+                const toolCards = Array.from(content.querySelectorAll('.tool-card, .tool-group'));
+                content.innerHTML = renderMarkdown(fullAssistantText);
+                for (const card of toolCards) {
+                  content.appendChild(card);
+                }
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+              });
             }
           }
-          chatContainer.scrollTop = chatContainer.scrollHeight;
           break;
         case 'assistantDone':
           isStreaming = false;
