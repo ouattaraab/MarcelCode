@@ -493,6 +493,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (this.pendingConfirmations.has(toolId)) {
           this.pendingConfirmations.delete(toolId);
           resolve(false);
+          this.postToWebview({ type: 'toolConfirmationExpired', toolId });
         }
       }, 60000);
     });
@@ -554,16 +555,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       padding: 8px 12px;
       border-radius: 8px;
       line-height: 1.5;
-      white-space: pre-wrap;
       word-wrap: break-word;
     }
     .message.user {
       background: var(--vscode-input-background);
       border: 1px solid var(--vscode-input-border);
+      white-space: pre-wrap;
     }
     .message.assistant {
       background: var(--vscode-editor-background);
       border: 1px solid var(--vscode-editorWidget-border);
+      white-space: normal;
     }
     .message .role {
       font-weight: bold;
@@ -698,6 +700,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     .tool-card .tool-status.denied {
       color: var(--vscode-errorForeground);
     }
+    .tool-card .tool-status.expired {
+      color: var(--vscode-descriptionForeground);
+      font-style: italic;
+    }
     .tool-card .tool-progress {
       height: 2px;
       background: var(--vscode-progressBar-background);
@@ -773,6 +779,48 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
     .app-content { display: flex; flex-direction: column; height: 100vh; }
     .app-content.hidden { display: none; }
+    .message h1, .message h2, .message h3 {
+      font-weight: 600;
+      margin: 8px 0 4px;
+      line-height: 1.3;
+    }
+    .message h1 { font-size: 1.15em; }
+    .message h2 { font-size: 1.05em; }
+    .message h3 { font-size: 0.95em; }
+    .message ul, .message ol {
+      padding-left: 20px;
+      margin: 4px 0;
+    }
+    .message li {
+      margin: 2px 0;
+    }
+    .tool-card {
+      animation: slideIn 0.15s ease-out;
+    }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .tool-card[data-tool="write_file"]       { border-left: 3px solid var(--vscode-charts-blue, #007acc); }
+    .tool-card[data-tool="edit_file"]        { border-left: 3px solid var(--vscode-charts-orange, #d18616); }
+    .tool-card[data-tool="read_file"]        { border-left: 3px solid var(--vscode-charts-purple, #6f42c1); }
+    .tool-card[data-tool="create_directory"] { border-left: 3px solid var(--vscode-charts-green, #388a34); }
+    .tool-card[data-tool="list_files"]       { border-left: 3px solid var(--vscode-charts-yellow, #cca700); }
+    .tool-group {
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 6px;
+      padding: 4px;
+      margin: 8px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      background: var(--vscode-editor-background);
+    }
+    .tool-group .tool-card {
+      margin: 0;
+      border: none;
+      border-radius: 4px;
+    }
   </style>
 </head>
 <body>
@@ -803,6 +851,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     const loginBtn = document.getElementById('login-btn');
     let currentAssistantEl = null;
     let isStreaming = false;
+    let fullAssistantText = '';
 
     loginBtn.addEventListener('click', () => {
       vscode.postMessage({ type: 'signIn' });
@@ -824,13 +873,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       'list_files': 'Liste des fichiers',
     };
 
-    function addMessage(role, text) {
-      const div = document.createElement('div');
-      div.className = 'message ' + role;
-      div.innerHTML = '<div class="role">' + (role === 'user' ? 'Vous' : "Marcel'IA") + '</div><div class="content">' + escapeHtml(text) + '</div>';
-      chatContainer.appendChild(div);
-      chatContainer.scrollTop = chatContainer.scrollHeight;
-      return div;
+    const FILE_EXT_ICONS = {
+      ts: '\\u{1F537}', tsx: '\\u{1F537}', js: '\\u{1F7E8}', jsx: '\\u{1F7E8}',
+      py: '\\u{1F40D}', java: '\\u2615', go: '\\u{1F439}', rs: '\\u{1F980}',
+      json: '{}', yaml: '\\u{1F4CB}', yml: '\\u{1F4CB}',
+      md: '\\u{1F4DD}', html: '\\u{1F310}', css: '\\u{1F3A8}', scss: '\\u{1F3A8}',
+      sh: '\\u{1F4BB}', sql: '\\u{1F5C4}',
+    };
+
+    function getFileIcon(path) {
+      if (!path) return '\\u{1F4C4}';
+      const ext = path.split('.').pop().toLowerCase();
+      return FILE_EXT_ICONS[ext] || '\\u{1F4C4}';
     }
 
     function escapeHtml(text) {
@@ -839,11 +893,111 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       return div.innerHTML;
     }
 
+    function renderMarkdown(text) {
+      const segments = [];
+      const fenceRe = /\`\`\`(\\w*)\\n?([\\s\\S]*?)\`\`\`/g;
+      let lastIndex = 0;
+      let match;
+      while ((match = fenceRe.exec(text)) !== null) {
+        segments.push({ type: 'inline', text: text.slice(lastIndex, match.index) });
+        segments.push({ type: 'code', lang: match[1], code: match[2] });
+        lastIndex = match.index + match[0].length;
+      }
+      segments.push({ type: 'inline', text: text.slice(lastIndex) });
+
+      let html = '';
+      for (const seg of segments) {
+        if (seg.type === 'code') {
+          html += '<pre><code>' + escapeHtml(seg.code) + '</code></pre>';
+        } else {
+          html += processInlineMarkdown(seg.text);
+        }
+      }
+      return html;
+    }
+
+    function processInlineMarkdown(text) {
+      const lines = text.split('\\n');
+      let html = '';
+      let inList = false;
+
+      for (const line of lines) {
+        const h3 = line.match(/^### (.+)/);
+        const h2 = line.match(/^## (.+)/);
+        const h1 = line.match(/^# (.+)/);
+        const li = line.match(/^[-*] (.+)/);
+        const oli = line.match(/^\\d+\\. (.+)/);
+
+        if (inList && !li && !oli) {
+          html += '</ul>';
+          inList = false;
+        }
+
+        if (h3) {
+          html += '<h3>' + inlineFormat(escapeHtml(h3[1])) + '</h3>';
+        } else if (h2) {
+          html += '<h2>' + inlineFormat(escapeHtml(h2[1])) + '</h2>';
+        } else if (h1) {
+          html += '<h1>' + inlineFormat(escapeHtml(h1[1])) + '</h1>';
+        } else if (li || oli) {
+          if (!inList) { html += '<ul>'; inList = true; }
+          html += '<li>' + inlineFormat(escapeHtml((li || oli)[1])) + '</li>';
+        } else if (line.trim() === '') {
+          html += '<br>';
+        } else {
+          html += inlineFormat(escapeHtml(line)) + '<br>';
+        }
+      }
+      if (inList) html += '</ul>';
+      return html;
+    }
+
+    function inlineFormat(text) {
+      text = text.replace(/\`([^\`]+)\`/g, function(_, code) {
+        return '<code>' + code + '</code>';
+      });
+      text = text.replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>');
+      text = text.replace(/(?<!\\*)\\*(?!\\*)([^*]+)(?<!\\*)\\*(?!\\*)/g, '<em>$1</em>');
+      return text;
+    }
+
+    function addMessage(role, text) {
+      const div = document.createElement('div');
+      div.className = 'message ' + role;
+      const contentHtml = role === 'assistant' ? '' : escapeHtml(text);
+      div.innerHTML = '<div class="role">' + (role === 'user' ? 'Vous' : "Marcel'IA") + '</div><div class="content">' + contentHtml + '</div>';
+      chatContainer.appendChild(div);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+      return div;
+    }
+
+    function appendToolCard(card) {
+      if (!currentAssistantEl) {
+        chatContainer.appendChild(card);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+        return;
+      }
+      const content = currentAssistantEl.querySelector('.content');
+      const lastChild = content.lastElementChild;
+
+      if (lastChild && lastChild.classList.contains('tool-card')) {
+        const group = document.createElement('div');
+        group.className = 'tool-group';
+        content.insertBefore(group, lastChild);
+        group.appendChild(lastChild);
+        group.appendChild(card);
+      } else if (lastChild && lastChild.classList.contains('tool-group')) {
+        lastChild.appendChild(card);
+      } else {
+        content.appendChild(card);
+      }
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+
     function getOrCreateToolCard(toolId, toolName) {
       let card = document.getElementById('tool-' + toolId);
       if (card) return card;
 
-      // Make sure typing indicator is removed
       if (currentAssistantEl) {
         const content = currentAssistantEl.querySelector('.content');
         const typing = content.querySelector('.typing-indicator');
@@ -853,6 +1007,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       card = document.createElement('div');
       card.className = 'tool-card';
       card.id = 'tool-' + toolId;
+      card.dataset.tool = toolName;
 
       const icon = TOOL_ICONS[toolName] || '\\u{1F527}';
       const label = TOOL_LABELS[toolName] || toolName;
@@ -863,12 +1018,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         '<div class="tool-status writing">En cours...</div>' +
         '<div class="tool-progress"></div>';
 
-      if (currentAssistantEl) {
-        currentAssistantEl.querySelector('.content').appendChild(card);
-      } else {
-        chatContainer.appendChild(card);
-      }
-      chatContainer.scrollTop = chatContainer.scrollHeight;
+      appendToolCard(card);
       return card;
     }
 
@@ -906,21 +1056,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'assistantStart':
           isStreaming = true;
           sendBtn.disabled = true;
+          fullAssistantText = '';
           currentAssistantEl = addMessage('assistant', '');
           currentAssistantEl.querySelector('.content').innerHTML = '<span class="typing-indicator">En train de r\\u00e9fl\\u00e9chir...</span>';
           break;
         case 'assistantDelta':
           if (currentAssistantEl) {
+            fullAssistantText += msg.text;
             const content = currentAssistantEl.querySelector('.content');
             const typing = content.querySelector('.typing-indicator');
             if (typing) typing.remove();
-            content.appendChild(document.createTextNode(msg.text));
+            const toolCards = Array.from(content.querySelectorAll('.tool-card, .tool-group'));
+            content.innerHTML = renderMarkdown(fullAssistantText);
+            for (const card of toolCards) {
+              content.appendChild(card);
+            }
           }
           chatContainer.scrollTop = chatContainer.scrollHeight;
           break;
         case 'assistantDone':
           isStreaming = false;
           sendBtn.disabled = false;
+          fullAssistantText = '';
           currentAssistantEl = null;
           break;
 
@@ -932,7 +1089,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'toolPath': {
           const card = document.getElementById('tool-' + msg.toolId);
           if (card) {
-            card.querySelector('.tool-path').textContent = msg.path;
+            card.querySelector('.tool-path').textContent = getFileIcon(msg.path) + ' ' + msg.path;
           }
           chatContainer.scrollTop = chatContainer.scrollHeight;
           break;
@@ -951,7 +1108,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         case 'toolAction': {
           const card = getOrCreateToolCard(msg.toolId || msg.tool, msg.tool);
           if (msg.path && card) {
-            card.querySelector('.tool-path').textContent = msg.path;
+            card.querySelector('.tool-path').textContent = getFileIcon(msg.path) + ' ' + msg.path;
           }
           break;
         }
@@ -997,6 +1154,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
           (card || target).appendChild(btns);
           chatContainer.scrollTop = chatContainer.scrollHeight;
+          break;
+        }
+        case 'toolConfirmationExpired': {
+          const card = document.getElementById('tool-' + msg.toolId);
+          if (card) {
+            const btns = card.querySelector('.confirm-btns');
+            if (btns) {
+              btns.innerHTML = '<span class="tool-status expired">Expir\\u00e9</span>';
+            }
+          }
           break;
         }
 

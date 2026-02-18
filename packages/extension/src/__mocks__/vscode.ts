@@ -86,6 +86,20 @@ export function _getMockFs(): Map<string, Uint8Array> {
   return _mockFs;
 }
 
+// --- Mock configuration ---
+
+const _mockConfigValues: Record<string, any> = {};
+
+export function _setMockConfig(key: string, value: any): void {
+  _mockConfigValues[key] = value;
+}
+
+export function _resetMockConfig(): void {
+  for (const k of Object.keys(_mockConfigValues)) {
+    delete _mockConfigValues[k];
+  }
+}
+
 // --- Mock workspace ---
 
 const _mockApplyEditFn = async (_edit: WorkspaceEdit): Promise<boolean> => true;
@@ -135,6 +149,24 @@ export const workspace = {
     };
   },
   applyEdit: _mockApplyEditFn,
+  getConfiguration: (_section?: string) => ({
+    get: <T>(key: string, defaultValue?: T): T => {
+      if (key in _mockConfigValues) {
+        return _mockConfigValues[key] as T;
+      }
+      return defaultValue as T;
+    },
+  }),
+  onDidChangeConfiguration: (_handler: any) => ({ dispose: () => {} }),
+  asRelativePath: (uri: any, _includeWorkspace?: boolean) => {
+    const p = typeof uri === 'string' ? uri : uri.fsPath || uri.path || String(uri);
+    return p.replace(/^\/workspace\//, '');
+  },
+  workspaceFolders: undefined as any,
+  findFiles: async (_include: any, _exclude?: any, _max?: number) => [],
+  onDidSaveTextDocument: (_handler: any) => ({ dispose: () => {} }),
+  onDidCreateFiles: (_handler: any) => ({ dispose: () => {} }),
+  onDidDeleteFiles: (_handler: any) => ({ dispose: () => {} }),
 };
 
 // --- Mock window ---
@@ -147,5 +179,9 @@ export const window = {
       document: doc,
       revealRange: _mockRevealRangeFn,
     };
+  },
+  activeTextEditor: undefined as any,
+  tabGroups: {
+    all: [] as any[],
   },
 };

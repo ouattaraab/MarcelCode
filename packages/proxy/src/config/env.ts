@@ -22,7 +22,7 @@ const envSchema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().default(20),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().default(60),
 
-  REQUIRE_AUTH: z.enum(['true', 'false']).transform((v) => v === 'true').default('false'),
+  REQUIRE_AUTH: z.string().transform((v) => v === 'true').default('false'),
 });
 
 export type Env = z.infer<typeof envSchema>;

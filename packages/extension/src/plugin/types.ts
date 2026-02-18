@@ -6,7 +6,6 @@ import {
   MarceliaPromptTransformer,
   MarceliaMessagePreprocessor,
   MarceliaMessagePostprocessor,
-  MarceliaPluginManifest,
 } from '@marcelia/shared';
 
 export interface RegisteredTool {
@@ -16,12 +15,6 @@ export interface RegisteredTool {
 
 export interface RegisteredSlashCommand extends MarceliaSlashCommand {
   handler: (args: string) => string;
-}
-
-export interface PluginRegistration {
-  pluginId: string;
-  manifest: MarceliaPluginManifest;
-  disposables: vscode.Disposable[];
 }
 
 export interface MarceliaPluginAPI {
