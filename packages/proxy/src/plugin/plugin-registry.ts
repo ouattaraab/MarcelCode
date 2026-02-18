@@ -44,4 +44,8 @@ export const pluginRegistry: ProxyPluginRegistry = {
       }
     }
   },
+
+  clear(): void {
+    plugins = [];
+  },
 };

@@ -15,4 +15,5 @@ export interface ProxyPluginRegistry {
   getPromptExtensions(): string[];
   applyRoutes(router: Router): void;
   applyMiddleware(router: Router): void;
+  clear(): void;
 }

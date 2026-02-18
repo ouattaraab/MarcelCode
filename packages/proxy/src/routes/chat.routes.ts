@@ -69,6 +69,8 @@ const WORKSPACE_TOOLS = [
   },
 ];
 
+const BUILT_IN_TOOL_NAMES = new Set(WORKSPACE_TOOLS.map(t => t.name));
+
 export const chatRoutes = Router();
 
 chatRoutes.post('/', async (req: Request, res: Response) => {
@@ -134,7 +136,12 @@ chatRoutes.post('/', async (req: Request, res: Response) => {
       tools: (() => {
         const proxyPluginTools = pluginRegistry.getTools();
         const clientPluginTools = (body.pluginTools || []).filter(
-          (t: any) => t && typeof t.name === 'string' && typeof t.description === 'string' && t.input_schema
+          (t: any) => t
+            && typeof t.name === 'string'
+            && typeof t.description === 'string'
+            && t.input_schema
+            && t.input_schema.type === 'object'
+            && !BUILT_IN_TOOL_NAMES.has(t.name)
         );
         const allPluginTools = [...proxyPluginTools, ...clientPluginTools];
         if (hasWorkspace) {

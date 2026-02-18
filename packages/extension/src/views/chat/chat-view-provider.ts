@@ -20,6 +20,8 @@ interface PendingToolResult {
 }
 
 const MAX_TOOL_ROUNDS = 20;
+const MAX_HISTORY_MESSAGES = 50;
+const TOOL_RESULT_TRUNCATE_CHARS = 2000;
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
   private webviewView?: vscode.WebviewView;
@@ -228,6 +230,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private trimHistory(): void {
+    if (this.history.length <= MAX_HISTORY_MESSAGES) return;
+
+    // Truncate tool_result content in older messages to save tokens
+    const cutoff = this.history.length - MAX_HISTORY_MESSAGES;
+    for (let i = 0; i < cutoff; i++) {
+      const msg = this.history[i];
+      if (Array.isArray(msg.content)) {
+        msg.content = msg.content.map((block: any) => {
+          if (block.type === 'tool_result' && typeof block.content === 'string' && block.content.length > TOOL_RESULT_TRUNCATE_CHARS) {
+            return { ...block, content: block.content.slice(0, TOOL_RESULT_TRUNCATE_CHARS) + '\n[...tronqué]' };
+          }
+          return block;
+        });
+      }
+    }
+
+    // Drop oldest message pairs (keep at least the last MAX_HISTORY_MESSAGES)
+    if (this.history.length > MAX_HISTORY_MESSAGES * 2) {
+      this.history = this.history.slice(-MAX_HISTORY_MESSAGES);
+    }
+  }
+
   private async streamWithToolLoop(
     systemPrompt: string,
     codebaseContext: any,
@@ -238,6 +263,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       this.postToWebview({ type: 'assistantDone' });
       return;
     }
+
+    this.trimHistory();
 
     const pluginToolSchemas = this.pluginRegistry.tools.getSchemas();
     const requestBody: any = {
@@ -271,11 +298,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               if (event.type === 'key_value' && event.key === 'path') {
                 this.streamedToolPaths.set(toolId, event.value);
                 this.postToWebview({ type: 'toolPath', toolId, path: event.value });
-                this.startStreamingToEditor(event.value);
+                this.startStreamingToEditor(event.value).catch(() => {
+                  // Editor streaming failed — file will be written via executeTool fallback
+                });
               } else if (event.type === 'content_chunk') {
                 this.streamingEditor.appendContent(event.value);
               } else if (event.type === 'content_done') {
-                this.streamingEditor.finalize();
+                this.streamingEditor.finalize().catch(() => {
+                  // Finalize failed — executeTool will handle the final write
+                });
                 this.postToWebview({ type: 'toolContentDone', toolId });
               }
             },
@@ -373,12 +404,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           const wasStreamed = this.streamedToolPaths.has(id);
           this.streamedToolPaths.delete(id);
 
-          // Ensure any streaming session is finalized before proceeding
-          await this.streamingEditor.finalize();
-
           if (confirmLevel === 'always' || confirmLevel === 'write-only') {
             const confirmed = await this.requestInlineConfirmation(id, `Créer/écrire: ${input.path}`);
             if (!confirmed) {
+              // Revert: cancel streaming and delete the partial file
               if (wasStreamed && rootFolder) {
                 await this.streamingEditor.revert(rootFolder, input.path);
               }
@@ -386,6 +415,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
               return { toolCallId: id, content: 'User denied the file write operation.', isError: true };
             }
           }
+
+          // Finalize streaming session (flush remaining content) after approval
+          await this.streamingEditor.finalize();
 
           // Always write the full content to ensure the file is complete,
           // even if streaming partially succeeded
